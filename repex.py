@@ -1,150 +1,104 @@
 #!/usr/bin/env python3
 r"""
-repex.py (20260520-2302Z)
+repex.py (20260520-2321Z)
 
 Export a local repository/folder to a single document for LLM context
 ingestion or human overview. Single-file Python script; no install.
 
 Quick start
 -----------
-    py repex.py . -o map.md             # markdown map of the current folder
-    py repex.py . --sections agent      # compact orientation for an agent
-    py repex.py . -o report.docx        # human-readable Word report
+    py repex.py . -o map.md           # markdown map of the current folder
+    py repex.py . -s agent            # compact orientation for an LLM agent
+    py repex.py . -o report.docx      # human-readable Word report
 
-Two main modes
---------------
---sections agent   For an LLM with file-access tools (Claude Code, Cursor,
-                   Aider, …). A compact orientation document — call sketch,
-                   used_by index, ranked core files, architecture, TOC.
-                   No inline file contents; the agent Reads on demand.
+Sections
+--------
+Building blocks the section-aware formats (docx / md / odt) compose into a
+document. Canonical render order:
 
---sections llm     For an LLM without tools (paste into a chat). Same map,
-                   PLUS the full content of every file inline, so the model
-                   sees everything in one shot.
+    glance          file count, lines by kind/language, largest file,
+                    README excerpt
+    recent          top 5 recently modified files
+    architecture    directory groups with auto-derived role labels
+    entry_points    language-tagged signals (Python __main__, C main,
+                    Rust fn main, Node default exports, …)
+    trace           two-level static call sketch from entry points
+    core            files ranked by used_by + size
+    toc             compact unified table of contents (T=tracked, U=untracked)
+    entries         per-file structured headers + full content (bulky)
 
-Other presets
--------------
-default / all   Everything (every section). Hand-off snapshot.
-human           glance, recent, architecture, toc. Overview for a human
-                reader; no call trace, no full content.
+Presets (-s / --sections)
+-------------------------
+Pick the preset matching your audience:
+
+    default / all   Everything (hand-off snapshot).
+    agent           LLM with file tools (Claude Code, Cursor, aider).
+                    glance, architecture, entry_points, trace, core, toc.
+                    Compact orientation; agent reads files on demand.
+    llm             LLM without tools (paste into chat). Same as agent
+                    but swaps 'toc' for 'entries' (full inline content).
+    human           Human reader skim. glance, recent, architecture, toc.
 
 Mix and match with '+name' / '-name', or list sections explicitly:
-    --sections agent,+recent           agent preset plus recent files
-    --sections all,-entries            everything except bulky content
-    --sections glance,toc,entries      explicit list
-
-Sections (apply to docx / md / odt; xlsx / json / ods always full)
-------------------------------------------------------------------
-Canonical render order:
-  glance          file count, lines by kind/language, largest file,
-                  README excerpt
-  recent          top 5 recently modified files
-  architecture    directory groups with auto-derived role labels
-  entry_points    language-tagged signals (Python __main__, C main,
-                  Rust fn main, Node default exports, …)
-  trace           two-level static call sketch from entry points
-  core            files ranked by used_by + size
-  toc             compact unified table of contents
-                  (entries are flagged T=tracked, U=untracked)
-  entries         per-file structured headers + full content (the bulky one)
+    -s agent,+recent           agent preset plus recent files
+    -s all,-entries            everything except bulky content
+    -s glance,toc,entries      explicit list
 
 Output formats (-f / --format)
 ------------------------------
-  docx   Word                    [python-docx]    respects --sections
-  md     Markdown                [stdlib only]    respects --sections
-  odt    LibreOffice text        [odfpy]          respects --sections
-  xlsx   Excel, one row per file [openpyxl]       always full
-  ods    LibreOffice sheet       [odfpy]          always full
-  json   Single JSON dump        [stdlib only]    always full
+    docx   Word                  [python-docx]   respects -s / --sections
+    md     Markdown              [stdlib only]   respects -s / --sections
+    odt    LibreOffice text      [odfpy]         respects -s / --sections
+    xlsx   Excel, one row/file   [openpyxl]      always full
+    ods    LibreOffice sheet     [odfpy]         always full
+    json   Single JSON dump      [stdlib only]   always full
 
-Format is inferred from --output's extension (e.g. -o myrepo.md → md). An
-explicit --format / -f always wins.
+Format is inferred from the -o / --output extension; -f / --format
+overrides it. Every format carries a per-file token estimate (heading / TOC
+for text formats, column / field for spreadsheets and JSON) and embeds a
+content-tokens total in the document header. Every export stamps
+'repex.py (VERSION)' as the author/creator (docx/xlsx/odt/ods) or as a
+top-level 'generator' field (json/md).
 
-Every export stamps 'repex.py (VERSION)' as the document author/creator
-(docx/xlsx/odt/ods) or a top-level "generator" field (json/md).
-
-Workflow flags (LLM-feed extras)
---------------------------------
-  --no-gitignore         Disable the default .gitignore filtering.
-  --since <ref>          Restrict to files changed since a git revision
-                         (committed diff + working tree + untracked-not-
-                         ignored). Requires a git repository.
-  --strip-comments       Remove line and block comments from code content
-                         before embedding. Strings are preserved. Typically
-                         saves 15-30% tokens on the 'llm' preset.
-  --token-budget N       Markdown / JSON only. Drop content of low-ranked
-                         files (by used_by + size) until the rendered
-                         output fits ~N tokens. Uses tiktoken if installed,
-                         else a 4-char/token estimate.
-  --token-model M        tiktoken model name. Default: gpt-4o. cl100k is a
-                         reasonable proxy for Claude.
-  --remote OWNER/REPO    Shallow-clone a remote repository into a tempdir
-                         and export it instead of a local path (also
-                         accepts a full clone URL). Tempdir is removed
-                         when the run finishes.
-  --clipboard            Markdown / JSON only. Also copy the rendered
-                         output to the system clipboard.
-
-Every format carries a per-file token estimate (heading / TOC for the
-text formats, column / field for the spreadsheets / json) and embeds a
-content-tokens total in the document header.
-
-'--sections' has a '-s' short alias.
-
-Optional dependencies (installed only if you use the matching format/flag):
-  py -m pip install python-docx     # docx
-  py -m pip install openpyxl        # xlsx
-  py -m pip install odfpy           # odt / ods
-  py -m pip install tiktoken        # exact token counting for --token-budget
-  py -m pip install pyperclip       # reliable cross-platform --clipboard
+Workflow flags
+--------------
+    -h / --help            Standard argparse help screen.
+    --no-gitignore         Disable default .gitignore filtering.
+    --since <ref>          Restrict to files changed since a git revision
+                           (committed diff + working tree + untracked).
+    --strip-comments       Strip line/block comments from code (strings
+                           preserved). Saves 15-30% tokens on 'llm'.
+    --token-budget N       Md/json only. Trim content of low-ranked files
+                           until the output fits ~N tokens. Uses tiktoken
+                           if installed, else a 4-char/token estimate.
+    --token-model M        tiktoken model name. Default: gpt-4o.
+    --remote OWNER/REPO    Shallow-clone a remote into a tempdir and
+                           export it (accepts a full clone URL too).
+    --clipboard            Md/json only. Also copy output to clipboard.
 
 Supported languages
 -------------------
-Full support (default-collected, language identified, function counted, calls
-traced in the sketch):
+Function counts and call sketch: Python, C, C++, C#, Java, JavaScript,
+TypeScript, Rust, Go, Ruby, PHP, Kotlin, Scala, Swift, R, Bash.
 
-  .py .pyw       Python              .rs            Rust
-  .c             C                   .go            Go
-  .cpp .cc .cxx  C++ (source)        .rb            Ruby
-  .h .hpp .hh    C++ (header)        .php           PHP
-  .cs            C#                  .kt .kts       Kotlin (+ script)
-  .java          Java                .scala         Scala
-  .js .jsx       JavaScript          .swift         Swift
-  .ts .tsx       TypeScript          .r             R
-                                     .sh            Bash
+Recognized and embedded (no parsing): HTML/CSS, JSON/YAML/TOML/XML,
+INI/CFG/CONF, Markdown, reStructuredText, RMarkdown, SQL, CMake, Batch,
+PowerShell. Add more per-run with --ext.
 
-Recognized and embedded (no function counting / call trace):
-  HTML/CSS/SCSS/Sass, JSON, YAML, TOML, XML, INI/CFG/CONF, Markdown,
-  reStructuredText, Plain text, RMarkdown, SQL, CMake, Batch, PowerShell.
-
-Add more per-run with --ext (e.g. --ext .zig .nim).
+Optional dependencies (install only for the format/flag you use):
+    py -m pip install python-docx openpyxl odfpy tiktoken pyperclip
 
 Examples
 --------
-# Agent orientation map (no inline content; for Claude Code, Cursor, ...)
-py repex.py "C:\Projects\MyRepo" --sections agent -o map.md
+    # Paste-into-chat context, comment-stripped, budgeted to ~80k tokens
+    py repex.py "C:\Projects\MyRepo" -s llm --strip-comments \
+                --token-budget 80000 -o context.md
 
-# Paste-into-chat LLM context, comment-stripped, budgeted to ~80k tokens
-py repex.py "C:\Projects\MyRepo" --sections llm --strip-comments \
-        --token-budget 80000 -o context.md
+    # Just what changed since main
+    py repex.py "C:\Projects\MyRepo" --since main -s llm -o changes.md
 
-# Just what changed since main (diff scope)
-py repex.py "C:\Projects\MyRepo" --since main --sections llm -o changes.md
-
-# Map a remote repo without cloning manually
-py repex.py --remote yamadashy/repomix --sections agent -o repomix-map.md
-
-# Word export, everything (human-friendly)
-py repex.py "C:\Projects\MyRepo" -o myrepo.docx
-
-# Excel triage sheet (one row per file)
-py repex.py "C:\Projects\MyRepo" -o myrepo.xlsx
-
-# Force format regardless of extension
-py repex.py "C:\Projects\MyRepo" -f json -o report.bin
-
-# Send markdown straight to the clipboard
-py repex.py "C:\Projects\MyRepo" --sections llm --clipboard -o context.md
+    # Map a remote repo without cloning manually
+    py repex.py --remote yamadashy/repomix -s agent -o repomix-map.md
 """
 
 from __future__ import annotations
@@ -164,7 +118,7 @@ from pathlib import Path
 from typing import Dict, List, Optional, Sequence, Set, Tuple
 
 
-__version__ = "20260520-2302Z"
+__version__ = "20260520-2321Z"
 
 
 def generator_name() -> str:
@@ -440,26 +394,38 @@ def resolve_sections(spec: str) -> Set[str]:
 
 # ---------------- core helpers ----------------
 
+# Mapping of XML-incompatible codepoints -> '?'. XML 1.0 allows:
+#   #x9, #xA, #xD, #x20-#xD7FF, #xE000-#xFFFD, #x10000-#x10FFFF
+# Everything else (control chars, surrogates, 0xFFFE/0xFFFF) must be scrubbed.
+# Using str.translate runs the substitution in C, ~100x faster than the
+# per-character Python loop for large embedded file contents.
+def _build_xml_scrub_table() -> Dict[int, int]:
+    table: Dict[int, int] = {}
+    bad: List[int] = []
+    # C0 controls except TAB/LF/CR.
+    for code in range(0x00, 0x20):
+        if code not in (0x09, 0x0A, 0x0D):
+            bad.append(code)
+    # Surrogate range.
+    bad.extend(range(0xD800, 0xE000))
+    # Non-characters at the BMP end.
+    bad.append(0xFFFE)
+    bad.append(0xFFFF)
+    q = ord("?")
+    for code in bad:
+        table[code] = q
+    return table
+
+
+_XML_SCRUB_TABLE: Dict[int, int] = _build_xml_scrub_table()
+
+
 def sanitize_xml_compatible_text(text: str) -> str:
-    """Remove XML-incompatible control characters while preserving tabs/newlines/CR."""
+    """Replace XML-incompatible control / surrogate / non-character codepoints
+    with '?', preserving tabs / newlines / CR. C-speed via str.translate."""
     if not text:
         return text
-
-    cleaned_chars = []
-    for ch in text:
-        code = ord(ch)
-        if (
-            code == 0x9
-            or code == 0xA
-            or code == 0xD
-            or 0x20 <= code <= 0xD7FF
-            or 0xE000 <= code <= 0xFFFD
-            or 0x10000 <= code <= 0x10FFFF
-        ):
-            cleaned_chars.append(ch)
-        else:
-            cleaned_chars.append("?")
-    return "".join(cleaned_chars)
+    return text.translate(_XML_SCRUB_TABLE)
 
 
 def parse_args() -> argparse.Namespace:
@@ -492,15 +458,15 @@ def parse_args() -> argparse.Namespace:
         choices=["docx", "xlsx", "md", "json", "odt", "ods"],
         default=None,
         help=(
-            "Output format. If omitted, inferred from --output extension. "
-            "If neither is set, defaults to docx."
+            "Output format. If omitted, inferred from the -o / --output "
+            "extension. If neither is set, defaults to docx."
         ),
     )
     parser.add_argument(
         "-o", "--output",
         help=(
             "Output file path. Default: <repo_name>_code_export.<format>. "
-            "If --format is omitted, the extension here decides the format."
+            "If -f / --format is omitted, this extension decides the format."
         ),
     )
     parser.add_argument(
@@ -796,8 +762,9 @@ def copy_text_to_clipboard(text: str) -> bool:
 
 
 # Per-language comment-stripper regexes. Strips comments only; preserves
-# strings (unlike _strip_strings_and_comments which is for call detection
-# and is too destructive for user-facing content).
+# strings (unlike _strip_for_call_detection which is destructive — it
+# removes strings too so call-graph regex doesn't fire on identifiers
+# inside literals or comments).
 # Patterns are applied in order; multiline pattern (block comments) first
 # avoids the line-comment pattern eating contents of unterminated blocks.
 _LINE_COMMENT_HASH = {
@@ -847,20 +814,50 @@ def strip_comments_only(text: str, suffix: str) -> str:
     return out
 
 
-def count_tokens(text: str, model_hint: str = "gpt-4o") -> Optional[int]:
-    """Estimate token count using tiktoken. Returns None if tiktoken is
-    unavailable so callers can warn instead of crashing. The exact tokenizer
-    differs across model families (OpenAI cl100k for gpt-4o; Claude uses
-    its own); cl100k is close enough for budgeting purposes."""
+# tiktoken encoder cache. The library itself caches by name internally,
+# but Python's import machinery and the per-call dict lookup still add up
+# when annotating thousands of files. We resolve once per model and reuse.
+# _TIKTOKEN_PROBE: None = not yet tried, False = import failed, True = ok.
+_TIKTOKEN_PROBE: Optional[bool] = None
+_TOKEN_ENCODERS: Dict[str, object] = {}
+
+
+def _get_token_encoder(model_hint: str):
+    """Lazily resolve and cache a tiktoken encoder for `model_hint`. Returns
+    None when tiktoken isn't installed (probed once) or the model is unknown
+    even with the cl100k fallback."""
+    global _TIKTOKEN_PROBE
+    if _TIKTOKEN_PROBE is False:
+        return None
+    cached = _TOKEN_ENCODERS.get(model_hint)
+    if cached is not None:
+        return cached
     try:
         import tiktoken  # type: ignore
     except ImportError:
+        _TIKTOKEN_PROBE = False
         return None
+    _TIKTOKEN_PROBE = True
     try:
         try:
             enc = tiktoken.encoding_for_model(model_hint)
         except KeyError:
             enc = tiktoken.get_encoding("cl100k_base")
+    except Exception:
+        return None
+    _TOKEN_ENCODERS[model_hint] = enc
+    return enc
+
+
+def count_tokens(text: str, model_hint: str = "gpt-4o") -> Optional[int]:
+    """Estimate token count using tiktoken. Returns None if tiktoken is
+    unavailable so callers can warn instead of crashing. The exact tokenizer
+    differs across model families (OpenAI cl100k for gpt-4o; Claude uses its
+    own); cl100k is close enough for budgeting purposes."""
+    enc = _get_token_encoder(model_hint)
+    if enc is None:
+        return None
+    try:
         return len(enc.encode(text))
     except Exception:
         return None
@@ -1381,6 +1378,25 @@ def build_records_for_files(
     return result
 
 
+def iter_all_records(
+    tracked: Sequence[Tuple[Path, Dict[str, object]]],
+    untracked: Sequence[Tuple[Path, Dict[str, object]]],
+    local_only: Sequence[Tuple[Path, Dict[str, object]]],
+) -> List[Tuple[Path, Dict[str, object]]]:
+    """Flat union of the three record buckets. Each exporter computes the
+    same union for header stats; centralizing here keeps the order stable
+    (tracked → untracked → local-only) and the call site one line."""
+    return list(tracked) + list(untracked) + list(local_only)
+
+
+def total_content_tokens(
+    records: Sequence[Tuple[Path, Dict[str, object]]],
+) -> int:
+    """Sum of per-record `tokens_estimate`. Returns 0 when annotation hasn't
+    been run (every record has 0 by default)."""
+    return sum(int(r.get("tokens_estimate", 0)) for _, r in records)
+
+
 def build_file_heading(rel: str, record: Dict[str, object]) -> str:
     """One-line file heading. Always includes size + mtime; lines and token
     estimate are added when known. Used by docx, odt, and the md heading
@@ -1574,9 +1590,13 @@ def harvest_project_symbols(
     return sym_to_file, short_to_qual
 
 
-def _strip_strings_and_comments(text: str, suffix: str) -> str:
-    """Remove string literals and comments so call-site detection inside the
-    body of a function does not match callees that appear in those tokens."""
+def _strip_for_call_detection(text: str, suffix: str) -> str:
+    """Internal helper for the call-graph sketch: strips BOTH string literals
+    and comments so a regex hunting for `name(` calls inside a function body
+    does not match identifiers that appear inside strings or comments.
+
+    Destructive — do NOT use for user-facing content. The user-facing
+    counterpart is `strip_comments_only`, which preserves strings."""
     out: List[str] = []
     i = 0
     n = len(text)
@@ -1740,7 +1760,7 @@ def extract_function_body(text: str, name: str, suffix: str) -> str:
 
 def find_calls_in_body(body: str, suffix: str, sym_to_file: Dict[str, str]) -> List[str]:
     """Return ordered, de-duplicated callee names that resolve to project symbols."""
-    cleaned = _strip_strings_and_comments(body, suffix)
+    cleaned = _strip_for_call_detection(body, suffix)
     seen: Set[str] = set()
     ordered: List[str] = []
     for match in CALL_REGEX.finditer(cleaned):
@@ -2271,10 +2291,8 @@ def export_docx(
     p = doc.add_heading(f"Repository export: {repo.name}", level=0)
     compact_paragraph(p, after_pt=3, before_pt=0)
 
-    content_tokens_total = sum(
-        int(r.get("tokens_estimate", 0))
-        for _, r in (list(tracked_records) + list(untracked_records)
-                     + list(local_only_records))
+    content_tokens_total = total_content_tokens(
+        iter_all_records(tracked_records, untracked_records, local_only_records)
     )
 
     add_compact_paragraph(doc, f"Root folder: {repo}", after_pt=0)
@@ -2472,10 +2490,8 @@ def export_xlsx(
         for cell in row:
             cell.alignment = wrap_alignment
 
-    content_tokens_total = sum(
-        int(r.get("tokens_estimate", 0))
-        for _, r in (list(tracked_records) + list(untracked_records)
-                     + list(local_only_records))
+    content_tokens_total = total_content_tokens(
+        iter_all_records(tracked_records, untracked_records, local_only_records)
     )
 
     meta = wb.create_sheet("Summary")
@@ -2556,12 +2572,10 @@ def export_md(
     # Per-file token estimates (populated upstream by annotate_record_tokens).
     # We sum them here so the header carries a clear total even if the user
     # didn't pass --token-budget.
-    combined = (list(tracked_records) + list(untracked_records)
-                + list(local_only_records))
-    content_tokens_total = sum(
-        int(r.get("tokens_estimate", 0)) for _, r in combined
+    content_tokens_total = total_content_tokens(
+        iter_all_records(tracked_records, untracked_records, local_only_records)
     )
-    have_tiktoken = count_tokens("hello", token_model) is not None
+    have_tiktoken = _get_token_encoder(token_model) is not None
     token_label = "tokens" if have_tiktoken else "tokens (rough estimate)"
 
     out: List[str] = []
@@ -2984,10 +2998,8 @@ def export_odt(
         for line in text.splitlines() or [""]:
             doc.text.addElement(P(stylename="Code", text=line))
 
-    content_tokens_total = sum(
-        int(r.get("tokens_estimate", 0))
-        for _, r in (list(tracked_records) + list(untracked_records)
-                     + list(local_only_records))
+    content_tokens_total = total_content_tokens(
+        iter_all_records(tracked_records, untracked_records, local_only_records)
     )
 
     add_h(1, f"Repository export: {repo.name}")
@@ -3393,10 +3405,8 @@ def export_ods(
     summary_col_b.addElement(TableColumnProperties(columnwidth="120mm"))
     doc.automaticstyles.addElement(summary_col_b)
 
-    content_tokens_total = sum(
-        int(r.get("tokens_estimate", 0))
-        for _, r in (list(tracked_records) + list(untracked_records)
-                     + list(local_only_records))
+    content_tokens_total = total_content_tokens(
+        iter_all_records(tracked_records, untracked_records, local_only_records)
     )
 
     summary_table = Table(name="Summary")
@@ -3648,7 +3658,7 @@ def _run_export(args: argparse.Namespace, repo: Path) -> int:
 
     # Cross-file enrichment runs once on the union so tracked files can show
     # untracked dependencies (and vice versa) via 'used_by'.
-    all_records = list(tracked_records) + list(untracked_records) + list(local_only_records)
+    all_records = iter_all_records(tracked_records, untracked_records, local_only_records)
     enrich_cross_file_metadata(repo, all_records)
 
     # --strip-comments shrinks code content before any rendering or token
