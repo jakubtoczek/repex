@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 r"""
-repex.py (20260520-2225Z)
+repex.py (20260520-2252Z)
 
 Export a local repository/folder to a single document for LLM context
 ingestion or human overview. Single-file Python script; no install.
@@ -85,6 +85,14 @@ Workflow flags (LLM-feed extras)
   --clipboard            Markdown / JSON only. Also copy the rendered
                          output to the system clipboard.
 
+In md/json outputs each file record carries a per-file token estimate
+('~N tokens' bullet in md, 'tokens_estimate' field in json), and a content
+total is embedded near the top of the file (HTML comment + bullet for md,
+top-level 'tokens' object for json).
+
+'--sections' accepts a '-s' short alias; argparse prefix matching also
+recognizes '--section', '--sect', '--sec', etc.
+
 Optional dependencies (installed only if you use the matching format/flag):
   py -m pip install python-docx     # docx
   py -m pip install openpyxl        # xlsx
@@ -158,7 +166,7 @@ from pathlib import Path
 from typing import Dict, List, Optional, Sequence, Set, Tuple
 
 
-__version__ = "20260520-2225Z"
+__version__ = "20260520-2252Z"
 
 
 def generator_name() -> str:
@@ -592,7 +600,7 @@ def parse_args() -> argparse.Namespace:
         ),
     )
     parser.add_argument(
-        "--sections",
+        "-s", "--sections",
         default="default",
         help=(
             "Section selection for docx/md/odt (xlsx/json/ods always include "
@@ -2504,17 +2512,37 @@ def export_md(
     head_commit_datetime: str,
     report_created: str,
     sections: Optional[Set[str]] = None,
+    token_model: str = "gpt-4o",
 ) -> None:
     if sections is None:
         sections = set(DEFAULT_SECTIONS)
 
+    # Per-file token estimates (populated upstream by annotate_record_tokens).
+    # We sum them here so the header carries a clear total even if the user
+    # didn't pass --token-budget.
+    combined = (list(tracked_records) + list(untracked_records)
+                + list(local_only_records))
+    content_tokens_total = sum(
+        int(r.get("tokens_estimate", 0)) for _, r in combined
+    )
+    have_tiktoken = count_tokens("hello", token_model) is not None
+    token_label = "tokens" if have_tiktoken else "tokens (rough estimate)"
+
     out: List[str] = []
     out.append(f"<!-- generator: {generator_name()} -->")
+    out.append(
+        f"<!-- content {token_label}: ~{content_tokens_total:,} "
+        f"(tokenizer: {token_model}) -->"
+    )
     out.append(f"# Repository export: {repo.name}")
     out.append("")
     out.append(f"- Generator: {generator_name()}")
     out.append(f"- Root folder: `{repo}`")
     out.append(f"- Report created (UTC): {report_created}")
+    out.append(
+        f"- Content {token_label}: ~{content_tokens_total:,} "
+        f"(tokenizer: {token_model})"
+    )
     if has_git:
         out.append(f"- Git repo detected: yes")
         out.append(f"- Git branch: {branch_name}")
@@ -2675,17 +2703,24 @@ def export_md(
     if "toc" in sections:
         out.append("## Table of contents")
         out.append("")
+
+        def _toc_line(rel: str, record: Dict[str, object], marker: str = "") -> str:
+            line_part = (f", {record['line_count']} lines"
+                         if record.get("line_count") is not None else "")
+            tok = int(record.get("tokens_estimate", 0))
+            tok_part = f", ~{tok:,} tokens" if tok > 0 else ""
+            prefix = f"[{marker}] " if marker else ""
+            return (f"- {prefix}`{rel}` ({record['size_human']}{line_part}"
+                    f"{tok_part}, {record['mtime_utc']})")
+
         if has_git:
             for marker, recs in (("T", tracked_records), ("U", untracked_records)):
                 for path, record in recs:
-                    rel = path.relative_to(repo).as_posix()
-                    line_part = f", {record['line_count']} lines" if record.get("line_count") is not None else ""
-                    out.append(f"- [{marker}] `{rel}` ({record['size_human']}{line_part}, {record['mtime_utc']})")
+                    out.append(_toc_line(path.relative_to(repo).as_posix(),
+                                         record, marker))
         else:
             for path, record in local_only_records:
-                rel = path.relative_to(repo).as_posix()
-                line_part = f", {record['line_count']} lines" if record.get("line_count") is not None else ""
-                out.append(f"- `{rel}` ({record['size_human']}{line_part}, {record['mtime_utc']})")
+                out.append(_toc_line(path.relative_to(repo).as_posix(), record))
         out.append("")
 
     if "entries" in sections:
@@ -2725,6 +2760,9 @@ def _md_emit_file_entries(
             out.append(f"- id: sha1:{record['quick_hash']}")
             if record.get("line_count") is not None:
                 out.append(f"- lines: {record['line_count']}")
+            tok = int(record.get("tokens_estimate", 0))
+            if tok > 0:
+                out.append(f"- tokens: ~{tok:,}")
             complexity = record.get("complexity", {})
             classes = int(complexity.get("classes", 0))
             structs = int(complexity.get("structs", 0))
@@ -2771,6 +2809,7 @@ def export_json(
     head_commit: str,
     head_commit_datetime: str,
     report_created: str,
+    token_model: str = "gpt-4o",
 ) -> None:
     """Single JSON dump containing repo metadata, summary stats, and every
     file record. Always includes everything (no --sections gating)."""
@@ -2792,6 +2831,7 @@ def export_json(
             "quick_hash": record["quick_hash"],
             "is_text": record["is_text"],
             "line_count": record["line_count"],
+            "tokens_estimate": int(record.get("tokens_estimate", 0)),
             "complexity": complexity,
             "dependencies_raw": list(record.get("dependencies_raw", [])),
             "dependencies_resolved": list(record.get("dependencies_resolved", [])),
@@ -2821,6 +2861,11 @@ def export_json(
         all_records = list(local_only_records)
     overall_summary = summarize_records([r for _, r in all_records])
 
+    content_tokens_total = sum(
+        int(r.get("tokens_estimate", 0)) for _, r in all_records
+    )
+    have_tiktoken = count_tokens("hello", token_model) is not None
+
     payload: Dict[str, object] = {
         "generator": generator_name(),
         "repository": repo.name,
@@ -2833,6 +2878,11 @@ def export_json(
             "head_commit_datetime_utc": head_commit_datetime if has_git else None,
         },
         "summary": _serialize_summary(overall_summary),
+        "tokens": {
+            "content_total_estimate": content_tokens_total,
+            "tokenizer_model": token_model,
+            "exact": have_tiktoken,
+        },
     }
     if has_git:
         payload["tracked"] = [_serialize_record(p, r) for p, r in tracked_records]
@@ -3330,6 +3380,31 @@ def apply_strip_comments(
     return n
 
 
+def _token_count_for(text: str, model: str) -> int:
+    """Shared token estimator. Uses tiktoken when available, falls back to a
+    4-char/token rough estimate otherwise."""
+    t = count_tokens(text, model)
+    return t if t is not None else estimate_tokens_rough(text)
+
+
+def annotate_record_tokens(
+    records: Sequence[Tuple[Path, Dict[str, object]]],
+    model: str,
+) -> int:
+    """Add a 'tokens_estimate' field to every record reflecting the tokens
+    consumed by its content_or_note. Returns the total across all records.
+
+    Called once before md/json export so the per-file metadata, the toc,
+    and the budget logic all share the same numbers (no double tokenize)."""
+    total = 0
+    for _, record in records:
+        content = str(record.get("content_or_note", ""))
+        n = _token_count_for(content, model)
+        record["tokens_estimate"] = n
+        total += n
+    return total
+
+
 def apply_token_budget(
     records: Sequence[Tuple[Path, Dict[str, object]]],
     budget: int,
@@ -3340,16 +3415,13 @@ def apply_token_budget(
     the budget is satisfied. Ranking is by used_by then size (see
     rank_records_for_pruning), and trimming starts from the bottom.
 
-    Returns (kept_records, trimmed_records, tokens_before, tokens_after).
-    A None result from tiktoken falls back to a rough 4-char/token estimate."""
-    def tok(text: str) -> int:
-        t = count_tokens(text, model)
-        return t if t is not None else estimate_tokens_rough(text)
+    Reads pre-computed 'tokens_estimate' from each record (call
+    annotate_record_tokens first); updates the field when content is
+    swapped for the trim marker.
 
+    Returns (kept_records, trimmed_records, tokens_before, tokens_after)."""
     ranked = rank_records_for_pruning(records)  # high-value first
-    tokens = {id(record): tok(str(record.get("content_or_note", "")))
-              for _, record in ranked}
-    total = sum(tokens.values())
+    total = sum(int(record.get("tokens_estimate", 0)) for _, record in ranked)
     before = total
 
     # Trim from the bottom of the ranking (lowest value) until under budget.
@@ -3359,7 +3431,7 @@ def apply_token_budget(
             break
         if not record.get("content_included"):
             continue
-        was = tokens[id(record)]
+        was = int(record.get("tokens_estimate", 0))
         if was <= 0:
             continue
         record["content_included"] = False
@@ -3370,7 +3442,8 @@ def apply_token_budget(
             f"[trimmed to fit --token-budget {budget}; "
             "see source file for full content]"
         )
-        new = tok(str(record["content_or_note"]))
+        new = _token_count_for(str(record["content_or_note"]), model)
+        record["tokens_estimate"] = new
         total = total - was + new
         trimmed += 1
     return (len(ranked) - trimmed, trimmed, before, total)
@@ -3527,6 +3600,12 @@ def _run_export(args: argparse.Namespace, repo: Path) -> int:
 
     fmt = resolve_format(args.format, args.output)
 
+    # For LLM-feed formats, annotate every record with a per-file token
+    # estimate so the md/json exporters can display it AND the budget
+    # logic can reuse the same number (no double tokenize).
+    if fmt in ("md", "json"):
+        annotate_record_tokens(all_records, args.token_model)
+
     # --token-budget is only meaningful for text outputs (md/json). For
     # binary formats it has no effect; warn rather than silently ignore.
     if args.token_budget is not None:
@@ -3578,9 +3657,10 @@ def _run_export(args: argparse.Namespace, repo: Path) -> int:
         elif fmt == "xlsx":
             export_xlsx(**common_kwargs)
         elif fmt == "md":
-            export_md(sections=sections, **common_kwargs)
+            export_md(sections=sections, token_model=args.token_model,
+                      **common_kwargs)
         elif fmt == "json":
-            export_json(**common_kwargs)
+            export_json(token_model=args.token_model, **common_kwargs)
         elif fmt == "odt":
             export_odt(sections=sections, **common_kwargs)
         elif fmt == "ods":
