@@ -1,27 +1,43 @@
 # repex
 
-Snapshot a local repository for an LLM in one command — works whether the LLM
-has file-access tools or not.
+Snapshot a local repository into a single document for an LLM — works whether
+the LLM has file-access tools or not, and also produces human-readable Word /
+Excel / LibreOffice reports.
 
-A single-file Python script (`repex.py`). Drop it anywhere, no install.
+A single-file Python script (`repex.py`). No install.
+
+## Get it
+
+```sh
+curl -O https://raw.githubusercontent.com/jakubtoczek/repex/main/repex.py
+# or clone the repo and run repex.py directly
+```
+
+## Quick start
+
+```sh
+py repex.py . -o map.md           # markdown map of the current folder
+py repex.py . --sections agent    # compact orientation for an LLM agent
+py repex.py . -o report.docx      # human-readable Word report
+```
 
 ## Why
 
 When you start a session on an unfamiliar repo, you usually burn 10–15 rounds
-of `grep`/`read` just figuring out what calls what, which file is the entry
+of `grep` / `read` figuring out what calls what, which file is the entry
 point, and how things are wired. repex builds that map up front:
 
-- a 2-level static call sketch starting from detected entry points,
+- a 2-level static call sketch from detected entry points,
 - a `used_by` inverse index across all files,
 - ranked "core files" by inbound references and size,
 - an auto-grouped architecture view of directories,
 - a unified table of contents.
 
-There are two main modes:
+## Two main modes
 
-### `--sections agent` — for an LLM **with** file tools (Claude Code, Cursor, …)
+### `--sections agent` — LLM **with** file tools (Claude Code, Cursor, Aider, …)
 
-A compact orientation document (no inline file contents). The agent reads
+A compact orientation document, no inline file contents. The agent reads
 files on demand; repex provides the cross-file intelligence that would
 otherwise take many tool calls to assemble.
 
@@ -29,10 +45,10 @@ otherwise take many tool calls to assemble.
 py repex.py "C:\Projects\MyRepo" --sections agent -o map.md
 ```
 
-Read the resulting `map.md` once at session start, then work normally with
-Read/Grep on the live tree.
+Give the agent `map.md` at session start; it then works normally with
+Read / Grep on the live tree.
 
-### `--sections llm` — for an LLM **without** tools (paste into chat)
+### `--sections llm` — LLM **without** tools (paste into chat)
 
 Same map as above, plus the full content of every file inline, so the model
 sees everything in one shot.
@@ -41,7 +57,7 @@ sees everything in one shot.
 py repex.py "C:\Projects\MyRepo" --sections llm -o context.md
 ```
 
-### Other presets
+## Other presets
 
 | Preset    | Audience                                  | What's included |
 |-----------|-------------------------------------------|-----------------|
@@ -50,60 +66,60 @@ py repex.py "C:\Projects\MyRepo" --sections llm -o context.md
 | `llm`     | LLM without tools (paste into chat)       | glance, architecture, entry_points, trace, core, **entries** |
 | `human`   | Human reader skim                         | glance, recent, architecture, toc |
 
-Mix and match: `--sections agent,+recent` or `--sections all,-entries`.
+Mix and match with `+name` / `-name`, or list sections explicitly:
 
-## Output formats
-
-Format is inferred from the `--output` extension; `-f`/`--format` overrides it.
-
-| Format | Extension | Dependency       | Section-aware |
-|--------|-----------|------------------|---------------|
-| Word   | `.docx`   | `python-docx`    | yes           |
-| Markdown | `.md`   | none (stdlib)    | yes           |
-| LibreOffice text | `.odt` | `odfpy`    | yes           |
-| Excel  | `.xlsx`   | `openpyxl`       | full (one row per file) |
-| LibreOffice sheet | `.ods` | `odfpy`   | full (one row per file) |
-| JSON   | `.json`   | none (stdlib)    | full          |
-
-The spreadsheet formats are great for triage — sort by `used_by`, filter by
-language, scan `entry_signals` — and for handing a non-developer something
-they can open and explore.
-
-Every export stamps `repex.py (VERSION)` as the document author/creator
-(docx/xlsx/odt/ods) or a top-level generator field (json/md), so a teammate
-can tell which version produced the file.
+```sh
+--sections agent,+recent          # agent preset plus recent files
+--sections all,-entries           # everything except bulky content
+--sections glance,toc,entries     # explicit list
+```
 
 ## Sections
 
+Canonical render order (applies to `docx`, `md`, `odt`):
+
 - **glance** — file count, lines by kind/language, largest file, README excerpt
-- **architecture** — auto-grouped directories with role labels
+- **recent** — top 5 recently modified files
+- **architecture** — directory groups with auto-derived role labels
 - **entry_points** — language-tagged signals (`__main__` guards, `main()`, default exports, …)
 - **trace** — two-level static call sketch from entry points
 - **core** — files ranked by `used_by` + size
-- **toc** — compact unified table of contents
+- **toc** — compact unified table of contents (entries flagged T=tracked, U=untracked)
 - **entries** — per-file structured headers + full content (the bulky one)
-- **recent** — top 5 recently modified files
+
+## Output formats
+
+Format is inferred from the `--output` extension; `-f` / `--format` overrides it.
+
+| Format | Extension | Dependency       | Respects `--sections`? |
+|--------|-----------|------------------|------------------------|
+| Word              | `.docx` | `python-docx` | yes |
+| Markdown          | `.md`   | none (stdlib) | yes |
+| LibreOffice text  | `.odt`  | `odfpy`       | yes |
+| Excel             | `.xlsx` | `openpyxl`    | no (always full) |
+| LibreOffice sheet | `.ods`  | `odfpy`       | no (always full) |
+| JSON              | `.json` | none (stdlib) | no (always full) |
+
+The "no (always full)" formats produce one row per file (`xlsx` / `ods`) or
+one record per file (`json`) — `--sections` doesn't apply. They're useful for
+triage (sort by `used_by`, filter by language, scan `entry_signals`) and for
+handing a non-developer something they can open and explore.
+
+Every export stamps `repex.py (VERSION)` as the document author/creator
+(`docx`/`xlsx`/`odt`/`ods`) or a top-level `generator` field (`json`/`md`),
+so a teammate can tell which version produced the file.
 
 ## Workflow flags
 
 | Flag | Effect |
 |------|--------|
 | `--no-gitignore` | Disable the default `.gitignore` filtering. |
-| `--since <ref>`  | Restrict the export to files changed since the given git revision (committed diff + working tree + untracked-not-ignored). Requires a git repository. |
+| `--since <ref>` | Restrict the export to files changed since the given git revision (committed diff + working tree + untracked-not-ignored). Requires a git repository. |
 | `--strip-comments` | Remove line and block comments from code content before embedding. Strings are preserved. Typically saves 15–30 % of tokens on the `llm` preset. |
-| `--token-budget N` | Markdown/JSON only. Drop content of low-ranked files (by `used_by` + size) until the rendered output fits ~N tokens. Uses `tiktoken` if installed, else a 4-char/token estimate. |
-| `--token-model M` | Tokenizer model name passed to tiktoken. Default `gpt-4o`. cl100k is a reasonable proxy for Claude. |
+| `--token-budget N` | Markdown / JSON only. Drop content of low-ranked files (by `used_by` + size) until the rendered output fits ~N tokens. Uses `tiktoken` if installed, else a 4-char/token estimate. |
+| `--token-model M` | Tokenizer model name passed to `tiktoken`. Default `gpt-4o`. cl100k is a reasonable proxy for Claude. |
 | `--remote OWNER/REPO` | Shallow-clone a remote into a tempdir and export it instead of a local path (also accepts a full clone URL). Tempdir is removed when the run finishes. |
-| `--clipboard` | Markdown/JSON only. Also copy the rendered output to the system clipboard. |
-
-Optional dependencies for these flags:
-
-```sh
-py -m pip install tiktoken     # exact token counting
-py -m pip install pyperclip    # reliable cross-platform clipboard
-```
-
-Both are optional — repex falls back gracefully if absent.
+| `--clipboard` | Markdown / JSON only. Also copy the rendered output to the system clipboard. |
 
 ## Supported languages
 
@@ -113,15 +129,32 @@ Python · C · C++ · C# · Java · JavaScript · TypeScript · Rust · Go · Ru
 PHP · Kotlin · Scala · Swift · R · Bash
 
 Many more are recognized and embedded as-is (HTML/CSS, JSON/YAML/TOML/XML,
-Markdown, SQL, CMake, batch, PowerShell, …).
+Markdown, SQL, CMake, batch, PowerShell, …). Add more per-run with `--ext`.
 
-## Usage
+## Dependencies
+
+repex itself runs on stdlib Python. Install extras only for the
+formats / flags you actually use:
 
 ```sh
-# Agent orientation map (markdown, no inline content)
+py -m pip install python-docx     # for .docx
+py -m pip install openpyxl        # for .xlsx
+py -m pip install odfpy           # for .odt / .ods
+py -m pip install tiktoken        # exact token counting for --token-budget
+py -m pip install pyperclip       # reliable cross-platform --clipboard
+```
+
+All are optional — repex either falls back gracefully (`tiktoken`,
+`pyperclip`) or prints a clear "install with: ..." hint when missing
+(`python-docx`, `openpyxl`, `odfpy`).
+
+## Examples
+
+```sh
+# Agent orientation map (no inline content; for Claude Code, Cursor, ...)
 py repex.py "C:\Projects\MyRepo" --sections agent -o map.md
 
-# Full LLM context for paste-into-chat, comment-stripped, budgeted to ~80 k tokens
+# Paste-into-chat LLM context, comment-stripped, budgeted to ~80k tokens
 py repex.py "C:\Projects\MyRepo" --sections llm --strip-comments \
             --token-budget 80000 -o context.md
 
@@ -140,8 +173,8 @@ py repex.py "C:\Projects\MyRepo" -o myrepo.xlsx
 # Force format regardless of extension
 py repex.py "C:\Projects\MyRepo" -f json -o report.bin
 
-# Output straight to clipboard
-py repex.py "C:\Projects\MyRepo" --sections llm --clipboard -o /tmp/throwaway.md
+# Send markdown straight to the clipboard
+py repex.py "C:\Projects\MyRepo" --sections llm --clipboard -o context.md
 ```
 
 Run `py repex.py --help` for the full option list.

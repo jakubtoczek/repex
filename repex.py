@@ -1,115 +1,144 @@
 #!/usr/bin/env python3
 r"""
-repex.py (20260520-2210Z)
+repex.py (20260520-2225Z)
 
-Export a local repository/folder to one of six formats for LLM context
-ingestion or human overview, controlled by --sections.
+Export a local repository/folder to a single document for LLM context
+ingestion or human overview. Single-file Python script; no install.
 
-Output formats (--format / -f):
-  docx   Word document, full sections     [needs python-docx]
-  xlsx   Excel workbook, one row per file [needs openpyxl]
-  md     Markdown, full sections          [stdlib only]
-  json   Single JSON dump (everything)    [stdlib only]
-  odt    LibreOffice text, full sections  [needs odfpy]
-  ods    LibreOffice spreadsheet          [needs odfpy]
+Quick start
+-----------
+    py repex.py . -o map.md             # markdown map of the current folder
+    py repex.py . --sections agent      # compact orientation for an agent
+    py repex.py . -o report.docx        # human-readable Word report
 
-If --format is omitted, the format is inferred from --output's extension
-(e.g. --output myrepo.md -> md). An explicit --format always wins.
+Two main modes
+--------------
+--sections agent   For an LLM with file-access tools (Claude Code, Cursor,
+                   Aider, …). A compact orientation document — call sketch,
+                   used_by index, ranked core files, architecture, TOC.
+                   No inline file contents; the agent Reads on demand.
 
-Files written by repex stamp 'repex.py (VERSION)' as the document author /
-creator (docx, xlsx, odt, ods) or as a generator field (json, md).
+--sections llm     For an LLM without tools (paste into a chat). Same map,
+                   PLUS the full content of every file inline, so the model
+                   sees everything in one shot.
 
-Supported languages
--------------------
-Full support — file collected by default, language identified, function count
-in the per-file 'decls:' line, and called functions traced in the call sketch:
+Other presets
+-------------
+default / all   Everything (every section). Hand-off snapshot.
+human           glance, recent, architecture, toc. Overview for a human
+                reader; no call trace, no full content.
 
-  Python (.py, .pyw)              Java (.java)
-  C (.c)                          JavaScript (.js, .jsx)
-  C++ (.cpp, .cc, .cxx,           TypeScript (.ts, .tsx)
-       .h, .hpp, .hh)             Rust (.rs)        Go (.go)
-  C# (.cs)                        Ruby (.rb)        PHP (.php)
-  R (.r)                          Kotlin (.kt, .kts)
-  Bash (.sh)                      Scala (.scala)    Swift (.swift)
+Mix and match with '+name' / '-name', or list sections explicitly:
+    --sections agent,+recent           agent preset plus recent files
+    --sections all,-entries            everything except bulky content
+    --sections glance,toc,entries      explicit list
 
-Recognized but no function counting (collected, language tagged, content
-included; function counts and call trace will be empty):
+Sections (apply to docx / md / odt; xlsx / json / ods always full)
+------------------------------------------------------------------
+Canonical render order:
+  glance          file count, lines by kind/language, largest file,
+                  README excerpt
+  recent          top 5 recently modified files
+  architecture    directory groups with auto-derived role labels
+  entry_points    language-tagged signals (Python __main__, C main,
+                  Rust fn main, Node default exports, …)
+  trace           two-level static call sketch from entry points
+  core            files ranked by used_by + size
+  toc             compact unified table of contents
+                  (entries are flagged T=tracked, U=untracked)
+  entries         per-file structured headers + full content (the bulky one)
 
-  HTML/CSS/SCSS/Sass, JSON, YAML, TOML, XML, INI/CFG/CONF,
-  Markdown, reStructuredText, Plain text, RMarkdown,
-  SQL, CMake, Batch (.bat), PowerShell (.ps1)
+Output formats (-f / --format)
+------------------------------
+  docx   Word                    [python-docx]    respects --sections
+  md     Markdown                [stdlib only]    respects --sections
+  odt    LibreOffice text        [odfpy]          respects --sections
+  xlsx   Excel, one row per file [openpyxl]       always full
+  ods    LibreOffice sheet       [odfpy]          always full
+  json   Single JSON dump        [stdlib only]    always full
 
-Other extensions can be added per-run with --ext.
+Format is inferred from --output's extension (e.g. -o myrepo.md → md). An
+explicit --format / -f always wins.
 
-Document sections (docx):
-  Title block       — git/repo metadata (always emitted)
-  glance            — files, total/code/non-code lines, top languages,
-                      largest file, README excerpt
-  recent            — recent files (top 5)
-  architecture      — directory groups with auto-derived labels
-  entry_points      — language-tagged entry-point signals
-  trace             — two-level static call sketch from entry points
-  core              — files ranked by used_by + size
-  toc               — compact unified TOC (T/U marker)
-  entries           — per-file structured headers + full content
-
-Section presets (--sections):
-  default   everything: glance, recent, architecture, entry_points,
-            trace, core, toc, entries
-  all       same as default
-  llm       LLM without tools (paste into chat): glance, architecture,
-            entry_points, trace, core, entries
-  agent     LLM with file-access tools (Claude Code, Cursor, etc.):
-            glance, architecture, entry_points, trace, core, toc
-            — same as llm but swaps 'entries' for 'toc'; the agent
-              reads files on demand instead of receiving them inline
-  human     Human reader skim: glance, recent, architecture, toc
-            — overview only, no call trace, no full content
-
-Mix and match with '+name' / '-name':
-  --sections llm,+toc          add toc to the llm preset
-  --sections all,-entries      everything except the bulky content
-  --sections glance,toc,entries   explicit list
-
-Examples
---------
-Word export (default — LLM context with a recent-activity hint):
-    py repex.py "C:\Projects\MyRepo" -o myrepo.docx
-
-Word export, LLM only (no recent, no TOC):
-    py repex.py "C:\Projects\MyRepo" --sections llm -o myrepo.docx
-
-Word export, human overview (no full content):
-    py repex.py "C:\Projects\MyRepo" --sections human -o myrepo.docx
-
-Excel export — format inferred from extension (--sections does not apply):
-    py repex.py "C:\Projects\MyRepo" -o myrepo.xlsx
-
-Markdown / JSON / LibreOffice — format inferred from --output:
-    py repex.py "C:\Projects\MyRepo" -o myrepo.md
-    py repex.py "C:\Projects\MyRepo" -o myrepo.json
-    py repex.py "C:\Projects\MyRepo" -o myrepo.odt
-    py repex.py "C:\Projects\MyRepo" -o myrepo.ods
-
-Force the format explicitly with -f / --format (overrides extension):
-    py repex.py "C:\Projects\MyRepo" -f xlsx -o report.bin
+Every export stamps 'repex.py (VERSION)' as the document author/creator
+(docx/xlsx/odt/ods) or a top-level "generator" field (json/md).
 
 Workflow flags (LLM-feed extras)
 --------------------------------
-  --no-gitignore     Disable the default .gitignore filtering.
-  --since <ref>      Restrict to files changed since a git revision
-                     (committed diff vs ref + working tree + untracked).
-  --strip-comments   Remove line/block comments from code content
-                     (saves 15-30% tokens; strings preserved).
-  --token-budget N   Drop content of low-rank files (by used_by + size)
-                     until the rendered md/json fits ~N tokens. Uses
-                     tiktoken if installed, else a 4-char/token estimate.
-  --token-model M    tiktoken model name for counting. Default: gpt-4o.
-  --remote OWNER/REPO  Shallow-clone a remote into a tempdir and export
-                       it (also accepts a full clone URL). Tempdir is
-                       removed when the run finishes.
-  --clipboard        For md/json output: also copy to system clipboard
-                     (pyperclip, then clip.exe / pbcopy / wl-copy / xclip).
+  --no-gitignore         Disable the default .gitignore filtering.
+  --since <ref>          Restrict to files changed since a git revision
+                         (committed diff + working tree + untracked-not-
+                         ignored). Requires a git repository.
+  --strip-comments       Remove line and block comments from code content
+                         before embedding. Strings are preserved. Typically
+                         saves 15-30% tokens on the 'llm' preset.
+  --token-budget N       Markdown / JSON only. Drop content of low-ranked
+                         files (by used_by + size) until the rendered
+                         output fits ~N tokens. Uses tiktoken if installed,
+                         else a 4-char/token estimate.
+  --token-model M        tiktoken model name. Default: gpt-4o. cl100k is a
+                         reasonable proxy for Claude.
+  --remote OWNER/REPO    Shallow-clone a remote repository into a tempdir
+                         and export it instead of a local path (also
+                         accepts a full clone URL). Tempdir is removed
+                         when the run finishes.
+  --clipboard            Markdown / JSON only. Also copy the rendered
+                         output to the system clipboard.
+
+Optional dependencies (installed only if you use the matching format/flag):
+  py -m pip install python-docx     # docx
+  py -m pip install openpyxl        # xlsx
+  py -m pip install odfpy           # odt / ods
+  py -m pip install tiktoken        # exact token counting for --token-budget
+  py -m pip install pyperclip       # reliable cross-platform --clipboard
+
+Supported languages
+-------------------
+Full support (default-collected, language identified, function counted, calls
+traced in the sketch):
+
+  .py .pyw       Python              .rs            Rust
+  .c             C                   .go            Go
+  .cpp .cc .cxx  C++ (source)        .rb            Ruby
+  .h .hpp .hh    C++ (header)        .php           PHP
+  .cs            C#                  .kt .kts       Kotlin (+ script)
+  .java          Java                .scala         Scala
+  .js .jsx       JavaScript          .swift         Swift
+  .ts .tsx       TypeScript          .r             R
+                                     .sh            Bash
+
+Recognized and embedded (no function counting / call trace):
+  HTML/CSS/SCSS/Sass, JSON, YAML, TOML, XML, INI/CFG/CONF, Markdown,
+  reStructuredText, Plain text, RMarkdown, SQL, CMake, Batch, PowerShell.
+
+Add more per-run with --ext (e.g. --ext .zig .nim).
+
+Examples
+--------
+# Agent orientation map (no inline content; for Claude Code, Cursor, ...)
+py repex.py "C:\Projects\MyRepo" --sections agent -o map.md
+
+# Paste-into-chat LLM context, comment-stripped, budgeted to ~80k tokens
+py repex.py "C:\Projects\MyRepo" --sections llm --strip-comments \
+        --token-budget 80000 -o context.md
+
+# Just what changed since main (diff scope)
+py repex.py "C:\Projects\MyRepo" --since main --sections llm -o changes.md
+
+# Map a remote repo without cloning manually
+py repex.py --remote yamadashy/repomix --sections agent -o repomix-map.md
+
+# Word export, everything (human-friendly)
+py repex.py "C:\Projects\MyRepo" -o myrepo.docx
+
+# Excel triage sheet (one row per file)
+py repex.py "C:\Projects\MyRepo" -o myrepo.xlsx
+
+# Force format regardless of extension
+py repex.py "C:\Projects\MyRepo" -f json -o report.bin
+
+# Send markdown straight to the clipboard
+py repex.py "C:\Projects\MyRepo" --sections llm --clipboard -o context.md
 """
 
 from __future__ import annotations
@@ -129,7 +158,7 @@ from pathlib import Path
 from typing import Dict, List, Optional, Sequence, Set, Tuple
 
 
-__version__ = "20260520-2210Z"
+__version__ = "20260520-2225Z"
 
 
 def generator_name() -> str:
