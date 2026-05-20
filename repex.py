@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 r"""
-repex.py (20260520-2252Z)
+repex.py (20260520-2302Z)
 
 Export a local repository/folder to a single document for LLM context
 ingestion or human overview. Single-file Python script; no install.
@@ -85,13 +85,11 @@ Workflow flags (LLM-feed extras)
   --clipboard            Markdown / JSON only. Also copy the rendered
                          output to the system clipboard.
 
-In md/json outputs each file record carries a per-file token estimate
-('~N tokens' bullet in md, 'tokens_estimate' field in json), and a content
-total is embedded near the top of the file (HTML comment + bullet for md,
-top-level 'tokens' object for json).
+Every format carries a per-file token estimate (heading / TOC for the
+text formats, column / field for the spreadsheets / json) and embeds a
+content-tokens total in the document header.
 
-'--sections' accepts a '-s' short alias; argparse prefix matching also
-recognizes '--section', '--sect', '--sec', etc.
+'--sections' has a '-s' short alias.
 
 Optional dependencies (installed only if you use the matching format/flag):
   py -m pip install python-docx     # docx
@@ -166,7 +164,7 @@ from pathlib import Path
 from typing import Dict, List, Optional, Sequence, Set, Tuple
 
 
-__version__ = "20260520-2252Z"
+__version__ = "20260520-2302Z"
 
 
 def generator_name() -> str:
@@ -1384,12 +1382,18 @@ def build_records_for_files(
 
 
 def build_file_heading(rel: str, record: Dict[str, object]) -> str:
-    size_human = str(record["size_human"])
-    mtime_utc = str(record["mtime_utc"])
-    line_count = record["line_count"]
+    """One-line file heading. Always includes size + mtime; lines and token
+    estimate are added when known. Used by docx, odt, and the md heading
+    helper so every format sees the same shape."""
+    bits: List[str] = [str(record["size_human"])]
+    line_count = record.get("line_count")
     if line_count is not None:
-        return f"{rel} ({size_human}, {line_count} lines, {mtime_utc})"
-    return f"{rel} ({size_human}, {mtime_utc})"
+        bits.append(f"{line_count} lines")
+    tokens = int(record.get("tokens_estimate", 0))
+    if tokens > 0:
+        bits.append(f"~{tokens:,} tokens")
+    bits.append(str(record["mtime_utc"]))
+    return f"{rel} ({', '.join(bits)})"
 
 
 def group_records_by_directory(
@@ -2142,7 +2146,10 @@ def add_unified_toc(
             role = str(record.get("role_hint", ""))
             type_label = str(record.get("type", ""))
             lines_str = f"{line_count} lines" if line_count is not None else "—"
-            label = f"{tag}  {rel}  |  {size_human}  |  {lines_str}  |  {type_label}  |  role:{role}"
+            tokens = int(record.get("tokens_estimate", 0))
+            tokens_str = f"~{tokens:,} tok" if tokens > 0 else "— tok"
+            label = (f"{tag}  {rel}  |  {size_human}  |  {lines_str}  |  "
+                     f"{tokens_str}  |  {type_label}  |  role:{role}")
             p = doc.add_paragraph(label, style="List Bullet")
             compact_paragraph(p, after_pt=0, before_pt=0)
 
@@ -2158,6 +2165,9 @@ def add_structured_file_header(doc, rel: str, record: Dict[str, object]) -> None
     add_docx_plain_marker_paragraph(doc, f"id: sha1:{record['quick_hash']}", after_pt=0)
     if record.get("line_count") is not None:
         add_docx_plain_marker_paragraph(doc, f"lines: {record['line_count']}", after_pt=0)
+    tokens = int(record.get("tokens_estimate", 0))
+    if tokens > 0:
+        add_docx_plain_marker_paragraph(doc, f"tokens: ~{tokens:,}", after_pt=0)
     classes = int(complexity.get("classes", 0))
     structs = int(complexity.get("structs", 0))
     functions_known = bool(complexity.get("functions_known", False))
@@ -2241,6 +2251,7 @@ def export_docx(
     head_commit_datetime: str,
     report_created: str,
     sections: Optional[Set[str]] = None,
+    token_model: str = "gpt-4o",
 ) -> None:
     if sections is None:
         sections = set(DEFAULT_SECTIONS)
@@ -2260,8 +2271,19 @@ def export_docx(
     p = doc.add_heading(f"Repository export: {repo.name}", level=0)
     compact_paragraph(p, after_pt=3, before_pt=0)
 
+    content_tokens_total = sum(
+        int(r.get("tokens_estimate", 0))
+        for _, r in (list(tracked_records) + list(untracked_records)
+                     + list(local_only_records))
+    )
+
     add_compact_paragraph(doc, f"Root folder: {repo}", after_pt=0)
     add_compact_paragraph(doc, f"Report created (UTC): {report_created}", after_pt=0)
+    add_compact_paragraph(
+        doc,
+        f"Content tokens (estimate, tokenizer {token_model}): ~{content_tokens_total:,}",
+        after_pt=0,
+    )
 
     if has_git:
         add_compact_paragraph(doc, "Git repo detected: yes", after_pt=0)
@@ -2339,6 +2361,7 @@ def export_xlsx(
     head_commit: str,
     head_commit_datetime: str,
     report_created: str,
+    token_model: str = "gpt-4o",
 ) -> None:
     try:
         from openpyxl import Workbook
@@ -2367,6 +2390,7 @@ def export_xlsx(
         "quick_hash",
         "is_text",
         "line_count",
+        "tokens_estimate",
         "functions_est",
         "classes_est",
         "structs_est",
@@ -2414,6 +2438,7 @@ def export_xlsx(
                 record["quick_hash"],
                 record["is_text"],
                 record["line_count"] if record["line_count"] is not None else "",
+                int(record.get("tokens_estimate", 0)) or "",
                 complexity.get("functions", 0) if complexity.get("functions_known") else "",
                 complexity.get("classes", 0),
                 complexity.get("structs", 0),
@@ -2426,12 +2451,13 @@ def export_xlsx(
             ])
 
     ws.freeze_panes = "A2"
+    # 22 columns now (tokens_estimate inserted at M, after line_count).
     widths = {
         "A": 14, "B": 20, "C": 60, "D": 20, "E": 14,
         "F": 14, "G": 14, "H": 16, "I": 18, "J": 10,
-        "K": 12, "L": 12, "M": 12, "N": 12, "O": 12,
-        "P": 36, "Q": 36, "R": 28, "S": 16, "T": 35,
-        "U": 120,
+        "K": 12, "L": 12, "M": 14, "N": 12, "O": 12,
+        "P": 12, "Q": 36, "R": 36, "S": 28, "T": 16,
+        "U": 35, "V": 120,
     }
     for col, width in widths.items():
         ws.column_dimensions[col].width = width
@@ -2445,6 +2471,12 @@ def export_xlsx(
         ws.row_dimensions[row[0].row].height = DATA_ROW_HEIGHT_PT
         for cell in row:
             cell.alignment = wrap_alignment
+
+    content_tokens_total = sum(
+        int(r.get("tokens_estimate", 0))
+        for _, r in (list(tracked_records) + list(untracked_records)
+                     + list(local_only_records))
+    )
 
     meta = wb.create_sheet("Summary")
     meta["A1"] = "Repository"
@@ -2461,6 +2493,10 @@ def export_xlsx(
     meta["B6"] = head_commit if has_git else "n/a"
     meta["A7"] = "HEAD commit date (UTC)"
     meta["B7"] = head_commit_datetime if has_git else "n/a"
+    meta["A8"] = "Content tokens (estimate)"
+    meta["B8"] = content_tokens_total
+    meta["A9"] = "Tokenizer model"
+    meta["B9"] = token_model
 
     wb.save(output_path)
 
@@ -2905,6 +2941,7 @@ def export_odt(
     head_commit_datetime: str,
     report_created: str,
     sections: Optional[Set[str]] = None,
+    token_model: str = "gpt-4o",
 ) -> None:
     try:
         from odf.opendocument import OpenDocumentText
@@ -2947,9 +2984,19 @@ def export_odt(
         for line in text.splitlines() or [""]:
             doc.text.addElement(P(stylename="Code", text=line))
 
+    content_tokens_total = sum(
+        int(r.get("tokens_estimate", 0))
+        for _, r in (list(tracked_records) + list(untracked_records)
+                     + list(local_only_records))
+    )
+
     add_h(1, f"Repository export: {repo.name}")
     add_p(f"Root folder: {repo}")
     add_p(f"Report created (UTC): {report_created}")
+    add_p(
+        f"Content tokens (estimate, tokenizer {token_model}): "
+        f"~{content_tokens_total:,}"
+    )
     if has_git:
         add_p(f"Git repo detected: yes")
         add_p(f"Git branch: {branch_name}")
@@ -3166,6 +3213,7 @@ def export_ods(
     head_commit: str,
     head_commit_datetime: str,
     report_created: str,
+    token_model: str = "gpt-4o",
 ) -> None:
     try:
         from odf.opendocument import OpenDocumentSpreadsheet
@@ -3189,7 +3237,8 @@ def export_ods(
     headers = [
         "section", "directory_group", "file_path", "type", "kind", "role",
         "size_bytes", "size_human", "mtime_utc", "quick_hash", "is_text",
-        "line_count", "functions_est", "classes_est", "structs_est",
+        "line_count", "tokens_estimate",
+        "functions_est", "classes_est", "structs_est",
         "dependencies", "used_by", "entry_signals",
         "content_included", "omission_reason", "content_or_note",
     ]
@@ -3198,7 +3247,8 @@ def export_ods(
     column_widths_mm = [
         25, 35, 100, 28, 22, 22,
         22, 28, 38, 24, 16,
-        20, 20, 20, 20,
+        20, 22,
+        20, 20, 20,
         60, 60, 50,
         24, 50, 200,
     ]
@@ -3318,6 +3368,7 @@ def export_ods(
                     record["quick_hash"],
                     record["is_text"],
                     line_cell,
+                    int(record.get("tokens_estimate", 0)),
                     functions_cell,
                     complexity.get("classes", 0),
                     complexity.get("structs", 0),
@@ -3342,6 +3393,12 @@ def export_ods(
     summary_col_b.addElement(TableColumnProperties(columnwidth="120mm"))
     doc.automaticstyles.addElement(summary_col_b)
 
+    content_tokens_total = sum(
+        int(r.get("tokens_estimate", 0))
+        for _, r in (list(tracked_records) + list(untracked_records)
+                     + list(local_only_records))
+    )
+
     summary_table = Table(name="Summary")
     summary_table.addElement(TableColumn(stylename="SumColA"))
     summary_table.addElement(TableColumn(stylename="SumColB"))
@@ -3353,6 +3410,8 @@ def export_ods(
         ("Branch", branch_name if has_git else "n/a"),
         ("HEAD commit", head_commit if has_git else "n/a"),
         ("HEAD commit date (UTC)", head_commit_datetime if has_git else "n/a"),
+        ("Content tokens (estimate)", content_tokens_total),
+        ("Tokenizer model", token_model),
     ]:
         summary_table.addElement(make_row([label, value], row_style="DataRow"))
     doc.spreadsheet.addElement(summary_table)
@@ -3600,11 +3659,12 @@ def _run_export(args: argparse.Namespace, repo: Path) -> int:
 
     fmt = resolve_format(args.format, args.output)
 
-    # For LLM-feed formats, annotate every record with a per-file token
-    # estimate so the md/json exporters can display it AND the budget
-    # logic can reuse the same number (no double tokenize).
-    if fmt in ("md", "json"):
-        annotate_record_tokens(all_records, args.token_model)
+    # Annotate every record with a per-file token estimate. Cheap with
+    # tiktoken (~1 ms per kB of text); useful in every format because a
+    # token count is the only size unit that's tokenizer-comparable across
+    # languages (10 kB of Python ~= 4 k tokens; 10 kB of Java ~= 2.7 k).
+    # md/json budget logic reuses the same numbers (no double tokenize).
+    annotate_record_tokens(all_records, args.token_model)
 
     # --token-budget is only meaningful for text outputs (md/json). For
     # binary formats it has no effect; warn rather than silently ignore.
@@ -3653,18 +3713,20 @@ def _run_export(args: argparse.Namespace, repo: Path) -> int:
 
     try:
         if fmt == "docx":
-            export_docx(sections=sections, **common_kwargs)
+            export_docx(sections=sections, token_model=args.token_model,
+                        **common_kwargs)
         elif fmt == "xlsx":
-            export_xlsx(**common_kwargs)
+            export_xlsx(token_model=args.token_model, **common_kwargs)
         elif fmt == "md":
             export_md(sections=sections, token_model=args.token_model,
                       **common_kwargs)
         elif fmt == "json":
             export_json(token_model=args.token_model, **common_kwargs)
         elif fmt == "odt":
-            export_odt(sections=sections, **common_kwargs)
+            export_odt(sections=sections, token_model=args.token_model,
+                       **common_kwargs)
         elif fmt == "ods":
-            export_ods(**common_kwargs)
+            export_ods(token_model=args.token_model, **common_kwargs)
         else:
             print(f"ERROR: unknown format: {fmt}", file=sys.stderr)
             return 1

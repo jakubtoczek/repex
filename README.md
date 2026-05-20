@@ -121,14 +121,13 @@ so a teammate can tell which version produced the file.
 | `--remote OWNER/REPO` | Shallow-clone a remote into a tempdir and export it instead of a local path (also accepts a full clone URL). Tempdir is removed when the run finishes. |
 | `--clipboard` | Markdown / JSON only. Also copy the rendered output to the system clipboard. |
 
-In `md` and `json` outputs every file record carries a per-file token
-estimate (`~N tokens` in the markdown TOC and entry bullets,
-`tokens_estimate` field in JSON). The total content tokens are embedded
-near the top of the file (HTML comment + bullet for md, top-level `tokens`
-object for json) so the count survives the run.
+Every format carries a per-file token estimate (md/odt/docx in headings and
+TOC entries, xlsx/ods/json as a column or field) and embeds a content-tokens
+total in the document header. Tokens aren't proportional to size (a 10 kB
+Python file is ~2× a 10 kB Java file in tokens), so token count adds real
+information for cost estimation and LLM-fit decisions even on the human path.
 
-`--sections` accepts a `-s` short alias, and argparse prefix matching
-already handles `--section`, `--sect`, `--sec`, etc.
+`--sections` has a `-s` short alias.
 
 ## Supported languages
 
