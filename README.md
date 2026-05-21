@@ -82,6 +82,28 @@ Mix and match with `+name` / `-name`, or list sections explicitly:
 -s glance,toc,entries     # explicit list
 ```
 
+## Git discovery
+
+When you pass a path, repex looks for git repositories in three places:
+
+1. **Self** — `path/.git` exists. Standard repo (the usual case).
+2. **Ancestor** — walk up the parents (matches `git status` from any
+   subfolder).
+3. **Children** — if neither of the above, scan immediate subfolders. Useful
+   for **workspace layouts** where one parent folder groups several
+   independent projects, each with its own `.git`.
+
+Every file is then tagged in the export with a marker:
+
+- `T` — tracked in some discovered repo
+- `U` — untracked in some discovered repo
+- `N` — outside every discovered repo (no-repo)
+
+In workspace mode you get a mix of `T` / `U` / `N` files in the same export,
+and the document header lists every discovered repo with its tracked /
+untracked counts plus the no-repo file total. `.gitignore` filtering and
+`--since` loop over every discovered root.
+
 ## Output formats
 
 Format is inferred from the `-o` / `--output` extension; `-f` / `--format`

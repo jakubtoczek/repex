@@ -1,104 +1,27 @@
 #!/usr/bin/env python3
-r"""
-repex.py (20260520-2321Z)
+r"""repex.py (20260521-0435Z) — repository export for LLMs and humans.
 
-Export a local repository/folder to a single document for LLM context
-ingestion or human overview. Single-file Python script; no install.
+Single-file Python script. Exports a local folder (or a remote repo via
+--remote) to docx / xlsx / md / json / odt / ods.
 
-Quick start
------------
-    py repex.py . -o map.md           # markdown map of the current folder
-    py repex.py . -s agent            # compact orientation for an LLM agent
+Quick:
+    py repex.py . -o map.md           # markdown map of current folder
+    py repex.py . -s agent            # LLM-agent orientation (no inline content)
     py repex.py . -o report.docx      # human-readable Word report
 
-Sections
---------
-Building blocks the section-aware formats (docx / md / odt) compose into a
-document. Canonical render order:
+Presets (-s / --sections):
+    default / all   everything
+    agent           LLM with file tools — map only, no inline content
+    llm             LLM without tools — map + full content inline
+    human           Human reader skim
 
-    glance          file count, lines by kind/language, largest file,
-                    README excerpt
-    recent          top 5 recently modified files
-    architecture    directory groups with auto-derived role labels
-    entry_points    language-tagged signals (Python __main__, C main,
-                    Rust fn main, Node default exports, …)
-    trace           two-level static call sketch from entry points
-    core            files ranked by used_by + size
-    toc             compact unified table of contents (T=tracked, U=untracked)
-    entries         per-file structured headers + full content (bulky)
+Format is inferred from the -o / --output extension; -f / --format overrides.
 
-Presets (-s / --sections)
--------------------------
-Pick the preset matching your audience:
+Git discovery: repex looks for .git at the path, at any ancestor, then in
+immediate child folders (workspace mode). Files outside every discovered
+repo are tagged 'N' (no-repo) instead of T (tracked) / U (untracked).
 
-    default / all   Everything (hand-off snapshot).
-    agent           LLM with file tools (Claude Code, Cursor, aider).
-                    glance, architecture, entry_points, trace, core, toc.
-                    Compact orientation; agent reads files on demand.
-    llm             LLM without tools (paste into chat). Same as agent
-                    but swaps 'toc' for 'entries' (full inline content).
-    human           Human reader skim. glance, recent, architecture, toc.
-
-Mix and match with '+name' / '-name', or list sections explicitly:
-    -s agent,+recent           agent preset plus recent files
-    -s all,-entries            everything except bulky content
-    -s glance,toc,entries      explicit list
-
-Output formats (-f / --format)
-------------------------------
-    docx   Word                  [python-docx]   respects -s / --sections
-    md     Markdown              [stdlib only]   respects -s / --sections
-    odt    LibreOffice text      [odfpy]         respects -s / --sections
-    xlsx   Excel, one row/file   [openpyxl]      always full
-    ods    LibreOffice sheet     [odfpy]         always full
-    json   Single JSON dump      [stdlib only]   always full
-
-Format is inferred from the -o / --output extension; -f / --format
-overrides it. Every format carries a per-file token estimate (heading / TOC
-for text formats, column / field for spreadsheets and JSON) and embeds a
-content-tokens total in the document header. Every export stamps
-'repex.py (VERSION)' as the author/creator (docx/xlsx/odt/ods) or as a
-top-level 'generator' field (json/md).
-
-Workflow flags
---------------
-    -h / --help            Standard argparse help screen.
-    --no-gitignore         Disable default .gitignore filtering.
-    --since <ref>          Restrict to files changed since a git revision
-                           (committed diff + working tree + untracked).
-    --strip-comments       Strip line/block comments from code (strings
-                           preserved). Saves 15-30% tokens on 'llm'.
-    --token-budget N       Md/json only. Trim content of low-ranked files
-                           until the output fits ~N tokens. Uses tiktoken
-                           if installed, else a 4-char/token estimate.
-    --token-model M        tiktoken model name. Default: gpt-4o.
-    --remote OWNER/REPO    Shallow-clone a remote into a tempdir and
-                           export it (accepts a full clone URL too).
-    --clipboard            Md/json only. Also copy output to clipboard.
-
-Supported languages
--------------------
-Function counts and call sketch: Python, C, C++, C#, Java, JavaScript,
-TypeScript, Rust, Go, Ruby, PHP, Kotlin, Scala, Swift, R, Bash.
-
-Recognized and embedded (no parsing): HTML/CSS, JSON/YAML/TOML/XML,
-INI/CFG/CONF, Markdown, reStructuredText, RMarkdown, SQL, CMake, Batch,
-PowerShell. Add more per-run with --ext.
-
-Optional dependencies (install only for the format/flag you use):
-    py -m pip install python-docx openpyxl odfpy tiktoken pyperclip
-
-Examples
---------
-    # Paste-into-chat context, comment-stripped, budgeted to ~80k tokens
-    py repex.py "C:\Projects\MyRepo" -s llm --strip-comments \
-                --token-budget 80000 -o context.md
-
-    # Just what changed since main
-    py repex.py "C:\Projects\MyRepo" --since main -s llm -o changes.md
-
-    # Map a remote repo without cloning manually
-    py repex.py --remote yamadashy/repomix -s agent -o repomix-map.md
+Full reference: README.md or `py repex.py -h`.
 """
 
 from __future__ import annotations
@@ -118,7 +41,7 @@ from pathlib import Path
 from typing import Dict, List, Optional, Sequence, Set, Tuple
 
 
-__version__ = "20260520-2321Z"
+__version__ = "20260521-0435Z"
 
 
 def generator_name() -> str:
@@ -580,7 +503,114 @@ def parse_args() -> argparse.Namespace:
 
 
 def is_git_repo(repo: Path) -> bool:
+    """True iff `repo` itself is a git work tree (i.e. has a `.git` entry)."""
     return (repo / ".git").exists()
+
+
+# Kind labels for discover_git_roots: where the .git directory sits
+# relative to the user-supplied repo path.
+GIT_ROOT_KIND_SELF = "self"          # repo itself has .git
+GIT_ROOT_KIND_ANCESTOR = "ancestor"  # found by walking up from repo
+GIT_ROOT_KIND_CHILD = "child"        # immediate-child subfolder of repo
+
+
+def discover_git_roots(repo: Path) -> List[Tuple[Path, str]]:
+    """Find every git work tree that touches the user-supplied `repo` path.
+
+    Search order:
+      1. `repo` itself. If it has .git, stop — that's the only relevant repo.
+      2. Otherwise walk UP the parents; the first ancestor with .git is used.
+      3. Otherwise scan IMMEDIATE children of `repo` for subfolders with .git.
+
+    Returns a list of (root_path, kind) tuples. Empty when nothing is git-
+    backed. Walk-up handles `repex C:/proj/src` when the repo is at C:/proj.
+    Walk-down handles workspaces where C:/work contains C:/work/projA/.git
+    and C:/work/projB/.git but C:/work itself isn't a repo.
+    """
+    if (repo / ".git").exists():
+        return [(repo, GIT_ROOT_KIND_SELF)]
+    # Walk up.
+    cur = repo.parent
+    while cur != cur.parent:
+        if (cur / ".git").exists():
+            return [(cur, GIT_ROOT_KIND_ANCESTOR)]
+        cur = cur.parent
+    # Walk down (immediate children only).
+    roots: List[Tuple[Path, str]] = []
+    try:
+        for child in sorted(repo.iterdir(), key=lambda p: p.name.lower()):
+            if child.is_dir() and (child / ".git").exists():
+                roots.append((child, GIT_ROOT_KIND_CHILD))
+    except (OSError, PermissionError):
+        pass
+    return roots
+
+
+def assign_git_origin(
+    file_path: Path,
+    roots: Sequence[Tuple[Path, str]],
+) -> Tuple[Optional[Path], str]:
+    """Pick the git root that contains `file_path`, if any.
+    Returns (root_path or None, rel_path_inside_root or '')."""
+    for root, _ in roots:
+        try:
+            rel = file_path.relative_to(root).as_posix()
+            return root, rel
+        except ValueError:
+            continue
+    return None, ""
+
+
+def render_repo_label(root: Path, repo: Path) -> str:
+    """Short, display-friendly label for a git root relative to `repo`.
+    Used in TOC markers and summary lines."""
+    try:
+        rel = root.relative_to(repo).as_posix()
+        return rel if rel and rel != "." else root.name
+    except ValueError:
+        # Ancestor: not under repo. Show its basename.
+        return root.name
+
+
+def render_toc_marker(
+    record: Dict[str, object],
+    repo: Path,
+    multi_root: bool,
+) -> str:
+    """One-letter (or 'T:label' / 'U:label') tag describing the record's
+    relationship to git: T=tracked, U=untracked, N=no-repo (file outside
+    any discovered git tree). When `multi_root` is True, T/U also carry
+    a repo label so the reader can distinguish workspaces."""
+    origin = record.get("git_origin")
+    if origin is None:
+        return "N"
+    base = "T" if record.get("git_tracked") else "U"
+    if multi_root:
+        return f"{base}:{render_repo_label(origin, repo)}"
+    return base
+
+
+def format_git_roots_summary(
+    roots: Sequence[Tuple[Path, str]],
+    repo: Path,
+    tracked_records: Sequence[Tuple[Path, Dict[str, object]]],
+    untracked_records: Sequence[Tuple[Path, Dict[str, object]]],
+    local_only_records: Sequence[Tuple[Path, Dict[str, object]]],
+) -> str:
+    """One-line description of the git topology for the run. Embedded in
+    every export's header so a reader can tell whether they're looking at
+    a single repo, a workspace of subrepos, or a no-repo folder."""
+    if not roots:
+        return "Git: no repository detected (local-only mode)."
+    parts: List[str] = []
+    for root, kind in roots:
+        label = render_repo_label(root, repo)
+        t = sum(1 for _, r in tracked_records if r.get("git_origin") == root)
+        u = sum(1 for _, r in untracked_records if r.get("git_origin") == root)
+        parts.append(f"{label} ({kind}; T:{t}, U:{u})")
+    no_repo = len(local_only_records)
+    tail = f"; no-repo files: {no_repo}" if no_repo > 0 else ""
+    return "Git roots: " + "; ".join(parts) + tail
 
 
 def run_git_command(repo: Path, args: List[str]) -> str:
@@ -642,66 +672,100 @@ def should_exclude_by_pattern(path: Path, patterns: Sequence[str]) -> bool:
     return False
 
 
-def filter_by_gitignore(repo: Path, paths: Sequence[Path]) -> List[Path]:
-    """Return paths NOT ignored by .gitignore. Uses 'git check-ignore' via
-    stdin batch so a single subprocess handles thousands of files. Falls
-    back to returning the input unchanged if git is unavailable or the
-    folder is not a git repo."""
+def _filter_by_gitignore_single(root: Path, paths: Sequence[Path]) -> List[Path]:
+    """Apply one git work tree's .gitignore to the subset of `paths` that
+    live under `root`. Paths outside `root` are passed through untouched.
+    Used internally by filter_by_gitignore_for_roots."""
     if not paths:
         return list(paths)
-    if not is_git_repo(repo):
+    under_root: List[Path] = []
+    outside: List[Path] = []
+    for p in paths:
+        try:
+            p.relative_to(root)
+            under_root.append(p)
+        except ValueError:
+            outside.append(p)
+    if not under_root:
         return list(paths)
     try:
-        rel_lines = "\n".join(str(p.relative_to(repo).as_posix()) for p in paths)
-        # check-ignore --stdin --verbose prints one line per IGNORED input
-        # (non-ignored entries produce no output) when --no-index is omitted.
-        # We use exit-code-tolerant invocation: 0 means at least one ignored,
-        # 1 means none ignored, >1 means a real error.
+        rel_lines = "\n".join(p.relative_to(root).as_posix() for p in under_root)
         proc = subprocess.run(
-            ["git", "-C", str(repo), "check-ignore", "--stdin"],
+            ["git", "-C", str(root), "check-ignore", "--stdin"],
             input=rel_lines,
             capture_output=True,
             text=True,
             check=False,
         )
         if proc.returncode > 1:
-            # Real error — fall back to "no filtering" rather than failing.
+            # Real git error — preserve everything rather than fail loudly.
             return list(paths)
         ignored = {line.strip() for line in proc.stdout.splitlines() if line.strip()}
     except FileNotFoundError:
         return list(paths)
     if not ignored:
         return list(paths)
-    return [p for p in paths if p.relative_to(repo).as_posix() not in ignored]
+    kept_under_root = [
+        p for p in under_root if p.relative_to(root).as_posix() not in ignored
+    ]
+    # Preserve original order.
+    kept_set = set(kept_under_root)
+    return [p for p in paths if p in kept_set or p in outside]
 
 
-def get_changed_paths_since(repo: Path, ref: str) -> Set[str]:
-    """Return relpaths changed between <ref> and the working tree:
-    committed diff (ref..HEAD) + staged + unstaged + untracked-but-tracked.
-    Used by --since to restrict the export to recent changes."""
-    if not is_git_repo(repo):
-        raise RuntimeError(f"--since requires a git repository: {repo}")
-    changed: Set[str] = set()
-    # Commits between ref and HEAD.
-    try:
-        out = run_git_command(repo, ["diff", "--name-only", f"{ref}..HEAD"])
-        changed.update(line.strip() for line in out.splitlines() if line.strip())
-    except RuntimeError as exc:
-        raise RuntimeError(f"--since: cannot resolve ref {ref!r}: {exc}") from exc
-    # Working tree (staged + unstaged) vs HEAD.
-    try:
-        out = run_git_command(repo, ["diff", "--name-only", "HEAD"])
-        changed.update(line.strip() for line in out.splitlines() if line.strip())
-    except RuntimeError:
-        pass
-    # Untracked files not in .gitignore.
-    try:
-        out = run_git_command(
-            repo, ["ls-files", "--others", "--exclude-standard"]
-        )
-        changed.update(line.strip() for line in out.splitlines() if line.strip())
-    except RuntimeError:
-        pass
+def filter_by_gitignore_for_roots(
+    roots: Sequence[Tuple[Path, str]],
+    paths: Sequence[Path],
+) -> List[Path]:
+    """Drop paths that any discovered git root's .gitignore would exclude.
+    A path inside multiple roots (shouldn't happen with our discovery, but
+    just in case) survives only if every relevant root keeps it."""
+    result = list(paths)
+    for root, _ in roots:
+        result = _filter_by_gitignore_single(root, result)
+    return result
+
+
+def get_changed_paths_for_roots(
+    roots: Sequence[Tuple[Path, str]],
+    ref: str,
+) -> Set[Path]:
+    """For each git root, collect the files changed since <ref>: committed
+    diff (ref..HEAD) + working-tree diff vs HEAD + untracked-not-ignored.
+    Returns absolute Paths so callers can match against the file list
+    without worrying about which root a path lives in."""
+    if not roots:
+        raise RuntimeError("--since requires at least one git repository.")
+    changed: Set[Path] = set()
+    for root, _ in roots:
+        try:
+            out = run_git_command(root, ["diff", "--name-only", f"{ref}..HEAD"])
+            for line in out.splitlines():
+                line = line.strip()
+                if line:
+                    changed.add(root / line)
+        except RuntimeError as exc:
+            raise RuntimeError(
+                f"--since: cannot resolve ref {ref!r} in {root}: {exc}"
+            ) from exc
+        try:
+            out = run_git_command(root, ["diff", "--name-only", "HEAD"])
+            for line in out.splitlines():
+                line = line.strip()
+                if line:
+                    changed.add(root / line)
+        except RuntimeError:
+            pass
+        try:
+            out = run_git_command(
+                root, ["ls-files", "--others", "--exclude-standard"]
+            )
+            for line in out.splitlines():
+                line = line.strip()
+                if line:
+                    changed.add(root / line)
+        except RuntimeError:
+            pass
     return changed
 
 
@@ -1318,6 +1382,11 @@ def get_file_record(
         "used_by": [],
         "complexity": complexity,
         "entry_signals": entry_signals,
+        # Git provenance — populated by build_records_for_files when given
+        # the discovered roots. None / False means the file is outside any
+        # repo (workspace-mode "no-repo" bucket).
+        "git_origin": None,        # Optional[Path] — root of containing git repo
+        "git_tracked": False,      # bool — tracked in that repo
     }
 
 
@@ -1361,11 +1430,19 @@ def build_records_for_files(
     preferred_encoding: str,
     max_text_file_kb: float,
     include_no_extension: bool,
+    roots: Optional[Sequence[Tuple[Path, str]]] = None,
+    tracked_per_root: Optional[Dict[Path, Set[str]]] = None,
 ) -> List[Tuple[Path, Dict[str, object]]]:
-    """Build per-file records. Cross-file enrichment (used_by, resolved
-    dependencies) is NOT applied here — call enrich_cross_file_metadata once
-    on the combined record list so tracked/untracked links are visible."""
+    """Build per-file records in one pass. If `roots` and `tracked_per_root`
+    are supplied, each record is tagged with its containing git repo (if any)
+    and whether the file is tracked in that repo.
+
+    Cross-file enrichment (used_by, resolved dependencies) is NOT applied
+    here — call enrich_cross_file_metadata once on the combined record list
+    so tracked/untracked links are visible."""
     result: List[Tuple[Path, Dict[str, object]]] = []
+    roots_list = list(roots) if roots else []
+    tracked_map = tracked_per_root or {}
     for path in files:
         record = get_file_record(
             path=path,
@@ -1374,6 +1451,13 @@ def build_records_for_files(
             max_text_file_kb=max_text_file_kb,
             include_no_extension=include_no_extension,
         )
+        # Tag with git origin (which repo the file lives in, if any) and
+        # whether that repo lists the file as tracked.
+        if roots_list:
+            origin_root, rel_in_root = assign_git_origin(path, roots_list)
+            record["git_origin"] = origin_root
+            if origin_root is not None:
+                record["git_tracked"] = rel_in_root in tracked_map.get(origin_root, set())
         result.append((path, record))
     return result
 
@@ -2132,34 +2216,42 @@ def add_unified_toc(
     local_only_records: Sequence[Tuple[Path, Dict[str, object]]],
     repo: Path,
     has_git: bool,
+    git_roots: Optional[Sequence[Tuple[Path, str]]] = None,
 ) -> None:
     p = doc.add_heading(title, level=1)
     compact_paragraph(p, after_pt=2, before_pt=3)
 
-    if has_git:
-        tagged: List[Tuple[str, Path, Dict[str, object]]] = (
-            [("T", path, record) for path, record in tracked_records]
-            + [("U", path, record) for path, record in untracked_records]
-        )
-    else:
-        tagged = [(" ", path, record) for path, record in local_only_records]
-
-    if not tagged:
+    # Render every record in canonical order. The marker (T/U/N or
+    # T:subrepo/U:subrepo) is derived per-record from git_origin so
+    # workspaces with multiple subrepos show which repo each file belongs to.
+    all_recs = (list(tracked_records) + list(untracked_records)
+                + list(local_only_records))
+    if not all_recs:
         add_compact_paragraph(doc, "(none)", after_pt=2)
         return
 
-    if has_git:
-        add_compact_paragraph(doc, "T = git tracked, U = untracked.", after_pt=1)
+    multi_root = bool(git_roots and len(git_roots) > 1)
+    legend_bits: List[str] = []
+    if any(r.get("git_origin") is not None and r.get("git_tracked")
+           for _, r in all_recs):
+        legend_bits.append("T = tracked")
+    if any(r.get("git_origin") is not None and not r.get("git_tracked")
+           for _, r in all_recs):
+        legend_bits.append("U = untracked")
+    if any(r.get("git_origin") is None for _, r in all_recs):
+        legend_bits.append("N = no-repo")
+    if legend_bits:
+        add_compact_paragraph(doc, ", ".join(legend_bits) + ".", after_pt=1)
 
-    grouped: Dict[str, List[Tuple[str, Path, Dict[str, object]]]] = defaultdict(list)
-    for tag, path, record in tagged:
+    grouped: Dict[str, List[Tuple[Path, Dict[str, object]]]] = defaultdict(list)
+    for path, record in all_recs:
         rel = path.relative_to(repo).as_posix()
-        grouped[infer_directory_bucket(rel)].append((tag, path, record))
+        grouped[infer_directory_bucket(rel)].append((path, record))
 
     for bucket in sorted(grouped.keys(), key=lambda b: (b != "(repo root)", b.lower())):
         p_bucket = doc.add_heading(bucket, level=2)
         compact_paragraph(p_bucket, after_pt=1, before_pt=2)
-        for tag, path, record in grouped[bucket]:
+        for path, record in grouped[bucket]:
             rel = path.relative_to(repo).as_posix()
             size_human = str(record["size_human"])
             line_count = record["line_count"]
@@ -2168,6 +2260,7 @@ def add_unified_toc(
             lines_str = f"{line_count} lines" if line_count is not None else "—"
             tokens = int(record.get("tokens_estimate", 0))
             tokens_str = f"~{tokens:,} tok" if tokens > 0 else "— tok"
+            tag = render_toc_marker(record, repo, multi_root)
             label = (f"{tag}  {rel}  |  {size_human}  |  {lines_str}  |  "
                      f"{tokens_str}  |  {type_label}  |  role:{role}")
             p = doc.add_paragraph(label, style="List Bullet")
@@ -2272,6 +2365,7 @@ def export_docx(
     report_created: str,
     sections: Optional[Set[str]] = None,
     token_model: str = "gpt-4o",
+    git_roots: Optional[Sequence[Tuple[Path, str]]] = None,
 ) -> None:
     if sections is None:
         sections = set(DEFAULT_SECTIONS)
@@ -2300,6 +2394,14 @@ def export_docx(
     add_compact_paragraph(
         doc,
         f"Content tokens (estimate, tokenizer {token_model}): ~{content_tokens_total:,}",
+        after_pt=0,
+    )
+    add_compact_paragraph(
+        doc,
+        format_git_roots_summary(
+            git_roots or [], repo,
+            tracked_records, untracked_records, local_only_records,
+        ),
         after_pt=0,
     )
 
@@ -2337,6 +2439,7 @@ def export_docx(
             add_unified_toc(
                 doc, "Table of contents",
                 tracked_records, untracked_records, local_only_records, repo, has_git,
+                git_roots=git_roots,
             )
         if "entries" in sections:
             add_docx_file_entries(doc, "Tracked file entries", tracked_records, repo)
@@ -2361,6 +2464,7 @@ def export_docx(
             add_unified_toc(
                 doc, "Table of contents",
                 tracked_records, untracked_records, local_only_records, repo, has_git,
+                git_roots=git_roots,
             )
         if "entries" in sections:
             add_docx_file_entries(doc, "File entries", local_only_records, repo)
@@ -2380,6 +2484,7 @@ def export_xlsx(
     head_commit_datetime: str,
     report_created: str,
     token_model: str = "gpt-4o",
+    git_roots: Optional[Sequence[Tuple[Path, str]]] = None,
 ) -> None:
     try:
         from openpyxl import Workbook
@@ -2396,7 +2501,8 @@ def export_xlsx(
     ws.title = "Repository export"
 
     headers = [
-        "section",
+        "section",          # tracked / untracked / local (= no-repo)
+        "git_origin",       # subrepo label (workspace mode), empty otherwise
         "directory_group",
         "file_path",
         "type",
@@ -2427,15 +2533,13 @@ def export_xlsx(
     for col_idx in range(1, len(headers) + 1):
         ws.cell(row=1, column=col_idx).font = header_font
 
-    if has_git:
-        groups = [
-            ("tracked", tracked_records),
-            ("untracked", untracked_records),
-        ]
-    else:
-        groups = [
-            ("local", local_only_records),
-        ]
+    # Iterate all three buckets unconditionally — in workspace mode (children
+    # roots) both tracked/untracked and local-only records can be non-empty.
+    groups = [
+        ("tracked", tracked_records),
+        ("untracked", untracked_records),
+        ("local", local_only_records),
+    ]
 
     for section_name, records in groups:
         for path, record in records:
@@ -2443,8 +2547,11 @@ def export_xlsx(
             directory_group = infer_directory_bucket(rel)
             complexity = record.get("complexity", {})
             entry_signals = ", ".join(f"{label} [{confidence}]" for label, confidence in record.get("entry_signals", []))
+            origin = record.get("git_origin")
+            git_origin_label = render_repo_label(origin, repo) if origin else ""
             ws.append([
                 section_name,
+                git_origin_label,
                 directory_group,
                 rel,
                 record["type"],
@@ -2469,13 +2576,13 @@ def export_xlsx(
             ])
 
     ws.freeze_panes = "A2"
-    # 22 columns now (tokens_estimate inserted at M, after line_count).
+    # 23 columns: tokens_estimate at N (was M), git_origin newly inserted at B.
     widths = {
-        "A": 14, "B": 20, "C": 60, "D": 20, "E": 14,
-        "F": 14, "G": 14, "H": 16, "I": 18, "J": 10,
-        "K": 12, "L": 12, "M": 14, "N": 12, "O": 12,
-        "P": 12, "Q": 36, "R": 36, "S": 28, "T": 16,
-        "U": 35, "V": 120,
+        "A": 14, "B": 16, "C": 20, "D": 60, "E": 20,
+        "F": 14, "G": 14, "H": 14, "I": 16, "J": 18,
+        "K": 10, "L": 12, "M": 12, "N": 14, "O": 12,
+        "P": 12, "Q": 12, "R": 36, "S": 36, "T": 28,
+        "U": 16, "V": 35, "W": 120,
     }
     for col, width in widths.items():
         ws.column_dimensions[col].width = width
@@ -2513,6 +2620,25 @@ def export_xlsx(
     meta["B8"] = content_tokens_total
     meta["A9"] = "Tokenizer model"
     meta["B9"] = token_model
+    meta["A10"] = "Git roots summary"
+    meta["B10"] = format_git_roots_summary(
+        git_roots or [], repo,
+        tracked_records, untracked_records, local_only_records,
+    )
+    # One row per discovered git root, listing kind + tracked/untracked counts.
+    next_row = 11
+    for root, kind in (git_roots or []):
+        meta[f"A{next_row}"] = f"  · {render_repo_label(root, repo)}"
+        t = sum(1 for _, r in tracked_records if r.get("git_origin") == root)
+        u = sum(1 for _, r in untracked_records if r.get("git_origin") == root)
+        meta[f"B{next_row}"] = f"{kind}; tracked={t}, untracked={u}"
+        next_row += 1
+    if local_only_records:
+        meta[f"A{next_row}"] = "  · no-repo files"
+        meta[f"B{next_row}"] = len(local_only_records)
+    # A bit wider so the labels/values are readable.
+    meta.column_dimensions["A"].width = 30
+    meta.column_dimensions["B"].width = 80
 
     wb.save(output_path)
 
@@ -2565,6 +2691,7 @@ def export_md(
     report_created: str,
     sections: Optional[Set[str]] = None,
     token_model: str = "gpt-4o",
+    git_roots: Optional[Sequence[Tuple[Path, str]]] = None,
 ) -> None:
     if sections is None:
         sections = set(DEFAULT_SECTIONS)
@@ -2600,6 +2727,9 @@ def export_md(
         out.append(f"- HEAD commit date (UTC): {head_commit_datetime}")
     else:
         out.append("- Git repo detected: no")
+    out.append(
+        f"- {format_git_roots_summary(git_roots or [], repo, tracked_records, untracked_records, local_only_records)}"
+    )
     out.append("")
 
     if has_git:
@@ -2753,24 +2883,21 @@ def export_md(
     if "toc" in sections:
         out.append("## Table of contents")
         out.append("")
+        multi_root = bool(git_roots and len(git_roots) > 1)
 
-        def _toc_line(rel: str, record: Dict[str, object], marker: str = "") -> str:
+        def _toc_line(rel: str, record: Dict[str, object]) -> str:
             line_part = (f", {record['line_count']} lines"
                          if record.get("line_count") is not None else "")
             tok = int(record.get("tokens_estimate", 0))
             tok_part = f", ~{tok:,} tokens" if tok > 0 else ""
-            prefix = f"[{marker}] " if marker else ""
-            return (f"- {prefix}`{rel}` ({record['size_human']}{line_part}"
+            marker = render_toc_marker(record, repo, multi_root)
+            return (f"- [{marker}] `{rel}` ({record['size_human']}{line_part}"
                     f"{tok_part}, {record['mtime_utc']})")
 
-        if has_git:
-            for marker, recs in (("T", tracked_records), ("U", untracked_records)):
-                for path, record in recs:
-                    out.append(_toc_line(path.relative_to(repo).as_posix(),
-                                         record, marker))
-        else:
-            for path, record in local_only_records:
-                out.append(_toc_line(path.relative_to(repo).as_posix(), record))
+        for path, record in iter_all_records(
+            tracked_records, untracked_records, local_only_records
+        ):
+            out.append(_toc_line(path.relative_to(repo).as_posix(), record))
         out.append("")
 
     if "entries" in sections:
@@ -2860,6 +2987,7 @@ def export_json(
     head_commit_datetime: str,
     report_created: str,
     token_model: str = "gpt-4o",
+    git_roots: Optional[Sequence[Tuple[Path, str]]] = None,
 ) -> None:
     """Single JSON dump containing repo metadata, summary stats, and every
     file record. Always includes everything (no --sections gating)."""
@@ -2870,6 +2998,7 @@ def export_json(
             for label, confidence in record.get("entry_signals", [])
         ]
         complexity = dict(record.get("complexity", {}))
+        origin = record.get("git_origin")
         return {
             "path": rel,
             "type": record["type"],
@@ -2882,6 +3011,8 @@ def export_json(
             "is_text": record["is_text"],
             "line_count": record["line_count"],
             "tokens_estimate": int(record.get("tokens_estimate", 0)),
+            "git_origin": render_repo_label(origin, repo) if origin else None,
+            "git_tracked": bool(record.get("git_tracked")),
             "complexity": complexity,
             "dependencies_raw": list(record.get("dependencies_raw", [])),
             "dependencies_resolved": list(record.get("dependencies_resolved", [])),
@@ -2905,16 +3036,12 @@ def export_json(
             "lines_by_language": dict(summary["lines_by_language"]),
         }
 
-    if has_git:
-        all_records = list(tracked_records) + list(untracked_records)
-    else:
-        all_records = list(local_only_records)
-    overall_summary = summarize_records([r for _, r in all_records])
-
-    content_tokens_total = sum(
-        int(r.get("tokens_estimate", 0)) for _, r in all_records
+    all_records = iter_all_records(
+        tracked_records, untracked_records, local_only_records
     )
-    have_tiktoken = count_tokens("hello", token_model) is not None
+    overall_summary = summarize_records([r for _, r in all_records])
+    content_tokens_total = total_content_tokens(all_records)
+    have_tiktoken = _get_token_encoder(token_model) is not None
 
     payload: Dict[str, object] = {
         "generator": generator_name(),
@@ -2926,6 +3053,21 @@ def export_json(
             "branch": branch_name if has_git else None,
             "head_commit": head_commit if has_git else None,
             "head_commit_datetime_utc": head_commit_datetime if has_git else None,
+            "roots": [
+                {
+                    "label": render_repo_label(root, repo),
+                    "kind": kind,
+                    "absolute_path": str(root),
+                    "tracked_count": sum(
+                        1 for _, r in tracked_records if r.get("git_origin") == root
+                    ),
+                    "untracked_count": sum(
+                        1 for _, r in untracked_records if r.get("git_origin") == root
+                    ),
+                }
+                for root, kind in (git_roots or [])
+            ],
+            "no_repo_count": len(local_only_records),
         },
         "summary": _serialize_summary(overall_summary),
         "tokens": {
@@ -2934,11 +3076,11 @@ def export_json(
             "exact": have_tiktoken,
         },
     }
-    if has_git:
-        payload["tracked"] = [_serialize_record(p, r) for p, r in tracked_records]
-        payload["untracked"] = [_serialize_record(p, r) for p, r in untracked_records]
-    else:
-        payload["local_only"] = [_serialize_record(p, r) for p, r in local_only_records]
+    # Always emit all three buckets so consumers don't have to special-case
+    # workspace mode (where files in tracked AND local_only coexist).
+    payload["tracked"] = [_serialize_record(p, r) for p, r in tracked_records]
+    payload["untracked"] = [_serialize_record(p, r) for p, r in untracked_records]
+    payload["local_only"] = [_serialize_record(p, r) for p, r in local_only_records]
 
     output_path.write_text(json.dumps(payload, indent=2, ensure_ascii=False), encoding="utf-8")
 
@@ -2956,6 +3098,7 @@ def export_odt(
     report_created: str,
     sections: Optional[Set[str]] = None,
     token_model: str = "gpt-4o",
+    git_roots: Optional[Sequence[Tuple[Path, str]]] = None,
 ) -> None:
     try:
         from odf.opendocument import OpenDocumentText
@@ -3016,6 +3159,10 @@ def export_odt(
         add_p(f"HEAD commit date (UTC): {head_commit_datetime}")
     else:
         add_p("Git repo detected: no")
+    add_p(format_git_roots_summary(
+        git_roots or [], repo,
+        tracked_records, untracked_records, local_only_records,
+    ))
 
     if has_git:
         all_records = list(tracked_records) + list(untracked_records)
@@ -3145,17 +3292,20 @@ def export_odt(
 
     if "toc" in sections:
         add_h(1, "Table of contents")
-        if has_git:
-            for marker, recs in (("T", tracked_records), ("U", untracked_records)):
-                for path, record in recs:
-                    rel = path.relative_to(repo).as_posix()
-                    line_part = f", {record['line_count']} lines" if record.get("line_count") is not None else ""
-                    add_meta(f"[{marker}] {rel} ({record['size_human']}{line_part}, {record['mtime_utc']})")
-        else:
-            for path, record in local_only_records:
-                rel = path.relative_to(repo).as_posix()
-                line_part = f", {record['line_count']} lines" if record.get("line_count") is not None else ""
-                add_meta(f"{rel} ({record['size_human']}{line_part}, {record['mtime_utc']})")
+        multi_root = bool(git_roots and len(git_roots) > 1)
+        for path, record in iter_all_records(
+            tracked_records, untracked_records, local_only_records
+        ):
+            rel = path.relative_to(repo).as_posix()
+            line_part = (f", {record['line_count']} lines"
+                         if record.get("line_count") is not None else "")
+            tok = int(record.get("tokens_estimate", 0))
+            tok_part = f", ~{tok:,} tokens" if tok > 0 else ""
+            marker = render_toc_marker(record, repo, multi_root)
+            add_meta(
+                f"[{marker}] {rel} ({record['size_human']}{line_part}"
+                f"{tok_part}, {record['mtime_utc']})"
+            )
 
     if "entries" in sections:
         groups = (
@@ -3226,6 +3376,7 @@ def export_ods(
     head_commit_datetime: str,
     report_created: str,
     token_model: str = "gpt-4o",
+    git_roots: Optional[Sequence[Tuple[Path, str]]] = None,
 ) -> None:
     try:
         from odf.opendocument import OpenDocumentSpreadsheet
@@ -3247,7 +3398,8 @@ def export_ods(
         ) from exc
 
     headers = [
-        "section", "directory_group", "file_path", "type", "kind", "role",
+        "section", "git_origin",
+        "directory_group", "file_path", "type", "kind", "role",
         "size_bytes", "size_human", "mtime_utc", "quick_hash", "is_text",
         "line_count", "tokens_estimate",
         "functions_est", "classes_est", "structs_est",
@@ -3257,7 +3409,7 @@ def export_ods(
     # Column widths in mm, one per header. Mirrors the xlsx layout: file_path
     # and the free-text columns get extra room; numeric/flag columns stay tight.
     column_widths_mm = [
-        25, 35, 100, 28, 22, 22,
+        25, 28, 35, 100, 28, 22, 22,
         22, 28, 38, 24, 16,
         20, 22,
         20, 20, 20,
@@ -3349,10 +3501,12 @@ def export_ods(
         para_style_name="HeaderPara",
     ))
 
-    if has_git:
-        groups = [("tracked", tracked_records), ("untracked", untracked_records)]
-    else:
-        groups = [("local", local_only_records)]
+    # Iterate all three buckets unconditionally — see export_xlsx.
+    groups = [
+        ("tracked", tracked_records),
+        ("untracked", untracked_records),
+        ("local", local_only_records),
+    ]
 
     for section_name, records in groups:
         for path, record in records:
@@ -3366,9 +3520,12 @@ def export_ods(
                 complexity.get("functions", 0) if complexity.get("functions_known") else ""
             )
             line_cell = record["line_count"] if record["line_count"] is not None else ""
+            origin = record.get("git_origin")
+            git_origin_label = render_repo_label(origin, repo) if origin else ""
             table.addElement(make_row(
                 [
                     section_name,
+                    git_origin_label,
                     directory_group,
                     rel,
                     record["type"],
@@ -3409,10 +3566,7 @@ def export_ods(
         iter_all_records(tracked_records, untracked_records, local_only_records)
     )
 
-    summary_table = Table(name="Summary")
-    summary_table.addElement(TableColumn(stylename="SumColA"))
-    summary_table.addElement(TableColumn(stylename="SumColB"))
-    for label, value in [
+    summary_rows: List[Tuple[object, object]] = [
         ("Repository", repo.name),
         ("Root folder", str(repo)),
         ("Report created (UTC)", report_created),
@@ -3422,7 +3576,25 @@ def export_ods(
         ("HEAD commit date (UTC)", head_commit_datetime if has_git else "n/a"),
         ("Content tokens (estimate)", content_tokens_total),
         ("Tokenizer model", token_model),
-    ]:
+        ("Git roots summary", format_git_roots_summary(
+            git_roots or [], repo,
+            tracked_records, untracked_records, local_only_records,
+        )),
+    ]
+    for root, kind in (git_roots or []):
+        t = sum(1 for _, r in tracked_records if r.get("git_origin") == root)
+        u = sum(1 for _, r in untracked_records if r.get("git_origin") == root)
+        summary_rows.append((
+            f"  · {render_repo_label(root, repo)}",
+            f"{kind}; tracked={t}, untracked={u}",
+        ))
+    if local_only_records:
+        summary_rows.append(("  · no-repo files", len(local_only_records)))
+
+    summary_table = Table(name="Summary")
+    summary_table.addElement(TableColumn(stylename="SumColA"))
+    summary_table.addElement(TableColumn(stylename="SumColB"))
+    for label, value in summary_rows:
         summary_table.addElement(make_row([label, value], row_style="DataRow"))
     doc.spreadsheet.addElement(summary_table)
 
@@ -3579,22 +3751,40 @@ def _run_export(args: argparse.Namespace, repo: Path) -> int:
         exclude_patterns=exclude_patterns,
     )
 
-    # .gitignore filter (default on, suppressed by --no-gitignore).
-    if not args.no_gitignore:
+    # Discover any git work tree(s) that touch repo: repo itself, an ancestor,
+    # or immediate-child subfolders. Empty list = pure local-only workspace.
+    roots = discover_git_roots(repo)
+    if roots:
+        kinds = ", ".join(
+            f"{render_repo_label(root, repo)} ({kind})" for root, kind in roots
+        )
+        print(f"Git repos detected: {kinds}.", file=sys.stderr)
+
+    # .gitignore filter (default on, suppressed by --no-gitignore). Loops
+    # over every discovered root; files outside any root are passed through.
+    if not args.no_gitignore and roots:
         before_count = len(files)
-        files = filter_by_gitignore(repo, files)
+        files = filter_by_gitignore_for_roots(roots, files)
         dropped = before_count - len(files)
         if dropped > 0:
             print(f".gitignore filtered out {dropped} file(s).", file=sys.stderr)
 
-    # --since <ref> restricts to files changed since that revision.
+    # --since <ref> restricts to files changed since that revision in any
+    # discovered repo. Files outside any repo are excluded.
     if args.since:
+        if not roots:
+            print(
+                "ERROR: --since requires a git repository (none found at, "
+                f"above, or below {repo}).",
+                file=sys.stderr,
+            )
+            return 1
         try:
-            changed = get_changed_paths_since(repo, args.since)
+            changed_abs = get_changed_paths_for_roots(roots, args.since)
         except RuntimeError as exc:
             print(f"ERROR: {exc}", file=sys.stderr)
             return 1
-        files = [p for p in files if p.relative_to(repo).as_posix() in changed]
+        files = [p for p in files if p in changed_abs]
         print(
             f"--since {args.since}: kept {len(files)} changed file(s).",
             file=sys.stderr,
@@ -3604,61 +3794,57 @@ def _run_export(args: argparse.Namespace, repo: Path) -> int:
         print("No files matched the selection criteria.", file=sys.stderr)
         return 2
 
-    has_git = is_git_repo(repo)
-    branch_name = get_git_branch_name(repo) if has_git else "n/a"
-    head_commit = get_git_head_commit(repo) if has_git else "n/a"
-    head_commit_datetime = get_git_head_commit_datetime_utc(repo) if has_git else "n/a"
+    has_git = bool(roots)
+    # Pick a representative root for the legacy header fields. When there are
+    # multiple, prefer the first child (workspace mode); the multi-repo
+    # summary line above already lists everything.
+    primary_root = roots[0][0] if roots else None
+    branch_name = get_git_branch_name(primary_root) if primary_root else "n/a"
+    head_commit = get_git_head_commit(primary_root) if primary_root else "n/a"
+    head_commit_datetime = (
+        get_git_head_commit_datetime_utc(primary_root) if primary_root else "n/a"
+    )
     report_created = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
 
+    # Per-root tracked sets, fetched once. Used to tag each record's
+    # git_tracked field during build_records_for_files.
+    tracked_per_root: Dict[Path, Set[str]] = {}
+    for root, _ in roots:
+        try:
+            relpaths = get_git_tracked_relpaths(root)
+            tracked_per_root[root] = {p.as_posix() for p in relpaths}
+        except RuntimeError as exc:
+            print(f"WARNING: cannot list tracked files in {root}: {exc}",
+                  file=sys.stderr)
+            tracked_per_root[root] = set()
+
+    # Single pass: build every record at once, tagging git_origin and
+    # git_tracked inline. The three legacy buckets are derived afterward.
+    all_records = build_records_for_files(
+        repo=repo,
+        files=files,
+        preferred_encoding=args.encoding,
+        max_text_file_kb=args.max_text_file_kb,
+        include_no_extension=args.include_no_extension,
+        roots=roots,
+        tracked_per_root=tracked_per_root,
+    )
+
+    # Derive the legacy three-bucket view for the exporter APIs that still
+    # take them. tracked = in some repo AND tracked. untracked = in some
+    # repo but not tracked. local_only = outside any repo (the new
+    # "no-repo" bucket; was "non-git" in the old code).
     tracked_records: List[Tuple[Path, Dict[str, object]]] = []
     untracked_records: List[Tuple[Path, Dict[str, object]]] = []
     local_only_records: List[Tuple[Path, Dict[str, object]]] = []
-
-    if has_git:
-        try:
-            tracked_relpaths = get_git_tracked_relpaths(repo)
-        except RuntimeError as exc:
-            print(f"WARNING: {exc}", file=sys.stderr)
-            print("Proceeding as a local folder without tracked/untracked split.", file=sys.stderr)
-            has_git = False
-            branch_name = "n/a"
-            head_commit = "n/a"
-            head_commit_datetime = "n/a"
-            local_only_records = build_records_for_files(
-                repo=repo,
-                files=files,
-                preferred_encoding=args.encoding,
-                max_text_file_kb=args.max_text_file_kb,
-                include_no_extension=args.include_no_extension,
-            )
+    for path, record in all_records:
+        if record.get("git_origin") is None:
+            local_only_records.append((path, record))
+        elif record.get("git_tracked"):
+            tracked_records.append((path, record))
         else:
-            tracked_files, untracked_files = split_tracked_untracked(repo, files, tracked_relpaths)
-            tracked_records = build_records_for_files(
-                repo=repo,
-                files=tracked_files,
-                preferred_encoding=args.encoding,
-                max_text_file_kb=args.max_text_file_kb,
-                include_no_extension=args.include_no_extension,
-            )
-            untracked_records = build_records_for_files(
-                repo=repo,
-                files=untracked_files,
-                preferred_encoding=args.encoding,
-                max_text_file_kb=args.max_text_file_kb,
-                include_no_extension=args.include_no_extension,
-            )
-    else:
-        local_only_records = build_records_for_files(
-            repo=repo,
-            files=files,
-            preferred_encoding=args.encoding,
-            max_text_file_kb=args.max_text_file_kb,
-            include_no_extension=args.include_no_extension,
-        )
+            untracked_records.append((path, record))
 
-    # Cross-file enrichment runs once on the union so tracked files can show
-    # untracked dependencies (and vice versa) via 'used_by'.
-    all_records = iter_all_records(tracked_records, untracked_records, local_only_records)
     enrich_cross_file_metadata(repo, all_records)
 
     # --strip-comments shrinks code content before any rendering or token
@@ -3719,8 +3905,10 @@ def _run_export(args: argparse.Namespace, repo: Path) -> int:
         head_commit=head_commit,
         head_commit_datetime=head_commit_datetime,
         report_created=report_created,
+        git_roots=roots,
     )
 
+    # git_roots is already part of common_kwargs (every exporter accepts it).
     try:
         if fmt == "docx":
             export_docx(sections=sections, token_model=args.token_model,
@@ -3768,24 +3956,24 @@ def _run_export(args: argparse.Namespace, repo: Path) -> int:
                 file=sys.stderr,
             )
 
+    # Unified summary — works for single-repo, workspace (multi subrepo),
+    # ancestor, and no-repo cases without three separate code paths.
+    tracked_count = len(tracked_records)
+    untracked_count = len(untracked_records)
+    no_repo_count = len(local_only_records)
+    total_count = tracked_count + untracked_count + no_repo_count
+    total_size = sum(int(record["size_bytes"]) for _, record in all_records)
+    print(f"Export created: {output_path}")
     if has_git:
-        tracked_count = len(tracked_records)
-        untracked_count = len(untracked_records)
-        total_count = tracked_count + untracked_count
-        total_size = sum(int(record["size_bytes"]) for _, record in tracked_records + untracked_records)
-        print(f"Export created: {output_path}")
-        print(f"Branch: {branch_name}")
-        print(f"HEAD commit: {head_commit}")
-        print(f"Tracked files included: {tracked_count}")
-        print(f"Untracked files included: {untracked_count}")
-        print(f"Total files included: {total_count}")
-        print(f"Total size: {format_file_size_kb(total_size)}")
+        print(f"Branch: {branch_name}  HEAD: {head_commit}")
+    if tracked_count or untracked_count:
+        print(f"Tracked: {tracked_count}  Untracked: {untracked_count}", end="")
+        if no_repo_count:
+            print(f"  No-repo: {no_repo_count}", end="")
+        print()
     else:
-        total_count = len(local_only_records)
-        total_size = sum(int(record["size_bytes"]) for _, record in local_only_records)
-        print(f"Export created: {output_path}")
-        print(f"Files included: {total_count}")
-        print(f"Total size: {format_file_size_kb(total_size)}")
+        print(f"Files: {total_count} (no git)")
+    print(f"Total files: {total_count}, total size: {format_file_size_kb(total_size)}")
 
     # Final token report on md/json. Helps users decide whether to add or
     # raise --token-budget. Cheap if tiktoken isn't installed (rough estimate).
