@@ -8,6 +8,10 @@ A single-file Python script (`repex.py`). No install.
 
 ## Get it
 
+Only `repex.py` is needed — drop it anywhere on disk and run it. The
+`LICENSE` and `README.md` live in the repo for documentation; they don't
+need to be installed alongside the script.
+
 ```sh
 # bash / zsh / macOS / WSL / Git Bash
 curl -O https://raw.githubusercontent.com/jakubtoczek/repex/main/repex.py
@@ -28,9 +32,18 @@ py repex.py . -o report.docx           # human-readable Word report
 
 ## Why
 
-When you start a session on an unfamiliar repo, you usually burn 10–15 rounds
-of `grep` / `read` figuring out what calls what, which file is the entry
-point, and how things are wired. repex builds that map up front:
+repex serves two LLM modes (and one human mode):
+
+- **Agents with file tools** (Claude Code, Cursor, aider) want a *map* —
+  enough cross-file intelligence to skip 10–15 rounds of `grep` / `read`
+  just figuring out what calls what. Use `--sections agent`.
+- **LLMs without tools** (paste into a chat) want a *map plus the full
+  content* in one shot. Use `--sections llm`.
+- **Humans** want a polished overview document (Word / Excel / LibreOffice)
+  to skim or hand to a non-developer. Use `--sections human` plus the
+  matching `-o report.docx` / `.xlsx` / `.odt`.
+
+Every mode reuses the same analysis pass:
 
 - a 2-level static call sketch from detected entry points,
 - a `used_by` inverse index across all files,
@@ -107,7 +120,9 @@ untracked counts plus the no-repo file total. `.gitignore` filtering and
 ## Output formats
 
 Format is inferred from the `-o` / `--output` extension; `-f` / `--format`
-overrides it.
+overrides it. When neither is set, the default is **md** — stdlib-only and
+opens anywhere, matching the LLM-first use case. Pass `-o report.docx`
+(or any other extension) for the human-readable formats.
 
 | Format            | Extension | Dependency       | Respects `--sections`?     |
 |-------------------|-----------|------------------|----------------------------|
@@ -204,6 +219,12 @@ Run `py repex.py -h` for the full option list.
 - **You need Handlebars-style template-driven prompt assembly.** Use
   [code2prompt](https://github.com/mufeedvh/code2prompt) — designed
   specifically as a customizable prompt builder.
+
+For very large folders (workspace layouts mixing a small project with
+thousands of unrelated archive / docs / build artifacts), the `llm`
+preset can balloon past any reasonable context window. Combine
+`--token-budget N` with `--exclude-dir` and `--strip-comments`, or point
+repex at the actual project subfolder instead of the workspace root.
 
 ## License
 

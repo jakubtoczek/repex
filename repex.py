@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-r"""repex.py (20260523-0901Z) — repository export for LLMs and humans.
+r"""repex.py (20260523-2213Z) — repository export for LLMs and humans.
 
 Single-file Python script. Exports a local folder (or a remote repo via
 --remote) to docx / xlsx / md / json / odt / ods.
@@ -16,6 +16,7 @@ Presets (-s / --sections):
     human           Human reader skim
 
 Format is inferred from the -o / --output extension; -f / --format overrides.
+Default when neither is set: md (stdlib-only, LLM-first).
 
 Git discovery: repex looks for .git at the path, at any ancestor, then in
 immediate child folders (workspace mode). Files outside every discovered
@@ -41,7 +42,7 @@ from pathlib import Path
 from typing import Dict, List, Optional, Sequence, Set, Tuple
 
 
-__version__ = "20260523-0901Z"
+__version__ = "20260523-2213Z"
 
 
 def generator_name() -> str:
@@ -266,16 +267,20 @@ SECTION_PRESETS: Dict[str, Tuple[str, ...]] = {
 SUPPORTED_FORMATS: Tuple[str, ...] = ("docx", "xlsx", "md", "json", "odt", "ods")
 
 
+DEFAULT_FORMAT = "md"
+
+
 def resolve_format(explicit_format: Optional[str], output_path: Optional[str]) -> str:
     """Pick output format: explicit --format wins, else infer from --output
-    extension, else default to docx."""
+    extension, else fall back to DEFAULT_FORMAT (md — stdlib-only, opens
+    anywhere, matches the LLM-first use case)."""
     if explicit_format:
         return explicit_format
     if output_path:
         ext = Path(output_path).suffix.lower().lstrip(".")
         if ext in SUPPORTED_FORMATS:
             return ext
-    return "docx"
+    return DEFAULT_FORMAT
 
 
 def resolve_sections(spec: str) -> Set[str]:
@@ -382,7 +387,8 @@ def parse_args() -> argparse.Namespace:
         default=None,
         help=(
             "Output format. If omitted, inferred from the -o / --output "
-            "extension. If neither is set, defaults to docx."
+            "extension. If neither is set, defaults to md (stdlib-only, "
+            "matches the LLM-first use case)."
         ),
     )
     parser.add_argument(
