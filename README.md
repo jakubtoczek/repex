@@ -126,12 +126,12 @@ opens anywhere, matching the LLM-first use case. Pass `-o report.docx`
 
 | Format            | Extension | Dependency       | Respects `--sections`?     |
 |-------------------|-----------|------------------|----------------------------|
+| Markdown          | `.md`     | none (stdlib)    | yes — **default**          |
 | Word              | `.docx`   | `python-docx`    | yes                        |
-| Markdown          | `.md`     | none (stdlib)    | yes                        |
 | LibreOffice text  | `.odt`    | `odfpy`          | yes                        |
+| JSON              | `.json`   | none (stdlib)    | no (one record per file)   |
 | Excel             | `.xlsx`   | `openpyxl`       | no (one row per file)      |
 | LibreOffice sheet | `.ods`    | `odfpy`          | no (one row per file)      |
-| JSON              | `.json`   | none (stdlib)    | no (one record per file)   |
 
 Spreadsheet outputs are useful for triage (sort by `used_by`, filter by
 language, scan `entry_signals`, and in workspace mode sort by `git_origin`
@@ -228,4 +228,4 @@ repex at the actual project subfolder instead of the workspace root.
 
 ## License
 
-MIT. See [LICENSE](LICENSE).
+0BSD (BSD Zero Clause). No attribution required. See [LICENSE](LICENSE).

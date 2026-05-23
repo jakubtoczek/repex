@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
-r"""repex.py (20260523-2213Z) — repository export for LLMs and humans.
+r"""repex.py (20260523-2228Z) — repository export for LLMs and humans.
 
 Single-file Python script. Exports a local folder (or a remote repo via
---remote) to docx / xlsx / md / json / odt / ods.
+--remote) to md / docx / odt / json / xlsx / ods.
 
 Quick:
     py repex.py . -s agent -o map.md     # LLM-agent orientation, no inline content
@@ -42,7 +42,7 @@ from pathlib import Path
 from typing import Dict, List, Optional, Sequence, Set, Tuple
 
 
-__version__ = "20260523-2213Z"
+__version__ = "20260523-2228Z"
 
 
 def generator_name() -> str:
@@ -264,7 +264,10 @@ SECTION_PRESETS: Dict[str, Tuple[str, ...]] = {
 }
 
 # Output formats. xlsx/json/ods always include every record (no --sections).
-SUPPORTED_FORMATS: Tuple[str, ...] = ("docx", "xlsx", "md", "json", "odt", "ods")
+# LLM-feed formats first (md is the default), then the human-target
+# document formats, then the spreadsheet formats. Order surfaces in
+# --help via the argparse choices below.
+SUPPORTED_FORMATS: Tuple[str, ...] = ("md", "docx", "odt", "json", "xlsx", "ods")
 
 
 DEFAULT_FORMAT = "md"
@@ -359,7 +362,7 @@ def sanitize_xml_compatible_text(text: str) -> str:
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description=(
-            "Export a local repository to docx, xlsx, md, json, odt, or ods "
+            "Export a local repository to md, docx, odt, json, xlsx, or ods "
             "for LLM context ingestion or human overview."
         )
     )
@@ -383,7 +386,7 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument(
         "-f", "--format",
-        choices=["docx", "xlsx", "md", "json", "odt", "ods"],
+        choices=["md", "docx", "odt", "json", "xlsx", "ods"],
         default=None,
         help=(
             "Output format. If omitted, inferred from the -o / --output "
