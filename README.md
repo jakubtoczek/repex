@@ -21,9 +21,9 @@ Or clone the repo and run `repex.py` directly.
 ## Quick start
 
 ```sh
-py repex.py . -o map.md           # markdown map of the current folder
-py repex.py . -s agent            # compact orientation for an LLM agent
-py repex.py . -o report.docx      # human-readable Word report
+py repex.py . -s agent -o map.md       # LLM-agent orientation, no inline content
+py repex.py . -s llm -o context.md     # paste-into-chat LLM context, full inline
+py repex.py . -o report.docx           # human-readable Word report
 ```
 
 ## Why
@@ -51,7 +51,7 @@ into a document. Canonical render order:
 - **trace** — two-level static call sketch from entry points
 - **core** — files ranked by `used_by` + size
 - **toc** — compact unified table of contents (entries flagged T=tracked,
-  U=untracked)
+  U=untracked, N=no-repo; see "Git discovery" below)
 - **entries** — per-file structured headers + full content (the bulky one)
 
 ## Presets
@@ -62,7 +62,7 @@ core choice — pick the one matching your audience:
 | Preset    | Audience                            | Sections |
 |-----------|-------------------------------------|----------|
 | `default` / `all` | Everything (hand-off snapshot)        | every section |
-| `agent`   | LLM with file tools (Claude Code, Cursor, Aider) | glance, architecture, entry_points, trace, core, toc |
+| `agent`   | LLM with file tools (Claude Code, Cursor, aider) | glance, architecture, entry_points, trace, core, toc |
 | `llm`     | LLM without tools (paste into chat) | glance, architecture, entry_points, trace, core, **entries** |
 | `human`   | Human reader skim                   | glance, recent, architecture, toc |
 
@@ -119,8 +119,9 @@ overrides it.
 | JSON              | `.json`   | none (stdlib)    | no (one record per file)   |
 
 Spreadsheet outputs are useful for triage (sort by `used_by`, filter by
-language, scan `entry_signals`) and for handing a non-developer something
-they can open and explore.
+language, scan `entry_signals`, and in workspace mode sort by `git_origin`
+to group files by subrepo) and for handing a non-developer something they
+can open and explore.
 
 Every format carries a per-file **token estimate** (heading / TOC for text
 formats, column / field for spreadsheets and JSON) and embeds a
@@ -139,7 +140,7 @@ so a teammate can tell which version produced the file.
 |-------------------------|--------|
 | `-h` / `--help`         | Standard argparse help screen. |
 | `--no-gitignore`        | Disable the default `.gitignore` filtering. |
-| `--since <ref>`         | Restrict the export to files changed since the given git revision (committed diff + working tree + untracked-not-ignored). Requires a git repository. |
+| `--since <ref>`         | Restrict the export to files changed since the given git revision (committed diff + working tree + untracked-not-ignored). Runs against every discovered git root, so it works in workspace mode and from a subfolder of a repo, not only on a self-repo path. |
 | `--strip-comments`      | Remove line and block comments from code content before embedding. Strings preserved. Saves 15–30 % tokens on the `llm` preset. |
 | `--token-budget N`      | Markdown / JSON only. Trim content of low-ranked files (by `used_by` + size) until the rendered output fits ~N tokens. Uses `tiktoken` if installed, else a 4-char/token estimate. For non-LLM formats use `--strip-comments` and let size shrink naturally. |
 | `--token-model M`       | Tokenizer model name passed to `tiktoken`. Default `gpt-4o`. cl100k is a reasonable proxy for Claude. |

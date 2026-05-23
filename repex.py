@@ -1,13 +1,13 @@
 #!/usr/bin/env python3
-r"""repex.py (20260521-0435Z) — repository export for LLMs and humans.
+r"""repex.py (20260523-0901Z) — repository export for LLMs and humans.
 
 Single-file Python script. Exports a local folder (or a remote repo via
 --remote) to docx / xlsx / md / json / odt / ods.
 
 Quick:
-    py repex.py . -o map.md           # markdown map of current folder
-    py repex.py . -s agent            # LLM-agent orientation (no inline content)
-    py repex.py . -o report.docx      # human-readable Word report
+    py repex.py . -s agent -o map.md     # LLM-agent orientation, no inline content
+    py repex.py . -s llm -o context.md   # paste-into-chat LLM context, full inline
+    py repex.py . -o report.docx         # human-readable Word report
 
 Presets (-s / --sections):
     default / all   everything
@@ -41,7 +41,7 @@ from pathlib import Path
 from typing import Dict, List, Optional, Sequence, Set, Tuple
 
 
-__version__ = "20260521-0435Z"
+__version__ = "20260523-0901Z"
 
 
 def generator_name() -> str:
@@ -1019,20 +1019,6 @@ def collect_all_files(
     return selected
 
 
-def split_tracked_untracked(repo: Path, files: Sequence[Path], tracked_relpaths: Set[Path]) -> Tuple[List[Path], List[Path]]:
-    tracked: List[Path] = []
-    untracked: List[Path] = []
-
-    for path in files:
-        rel = path.relative_to(repo)
-        if rel in tracked_relpaths:
-            tracked.append(path)
-        else:
-            untracked.append(path)
-
-    return tracked, untracked
-
-
 def read_text_file(path: Path, preferred_encoding: str) -> str:
     encodings_to_try = [preferred_encoding, "utf-8", "utf-8-sig", "cp1252", "latin-1"]
     seen = set()
@@ -1603,7 +1589,10 @@ def add_architecture_summary(
     untracked_records: Sequence[Tuple[Path, Dict[str, object]]],
     local_only_records: Sequence[Tuple[Path, Dict[str, object]]],
 ) -> None:
-    records = list(tracked_records) + list(untracked_records) if has_git else list(local_only_records)
+    # Use the full union — in workspace mode (has_git=True but with no-repo
+    # files alongside subrepos), the old "tracked + untracked or local-only"
+    # split would silently drop the no-repo files from the directory groups.
+    records = iter_all_records(tracked_records, untracked_records, local_only_records)
     grouped = group_records_by_directory(repo, records)
 
     p = doc.add_heading("Architecture", level=1)
@@ -2410,64 +2399,53 @@ def export_docx(
         add_compact_paragraph(doc, f"Git branch: {branch_name}", after_pt=0)
         add_compact_paragraph(doc, f"HEAD commit: {head_commit}", after_pt=0)
         add_compact_paragraph(doc, f"HEAD commit date (UTC): {head_commit_datetime}", after_pt=2)
-
-        tracked_summary = summarize_records([record for _, record in tracked_records])
-        untracked_summary = summarize_records([record for _, record in untracked_records])
-        overall_summary = summarize_records(
-            [record for _, record in tracked_records]
-            + [record for _, record in untracked_records]
-        )
-
-        all_records = list(tracked_records) + list(untracked_records)
-
-        if "glance" in sections:
-            add_at_a_glance_block(
-                doc, overall_summary, all_records, repo, has_git,
-                tracked_summary=tracked_summary, untracked_summary=untracked_summary,
-            )
-        if "recent" in sections:
-            add_recent_files_block(doc, "Recent files", all_records, repo)
-        if "architecture" in sections:
-            add_architecture_summary(doc, repo, has_git, tracked_records, untracked_records, local_only_records)
-        if "entry_points" in sections:
-            add_entry_points_block(doc, "Entry points", all_records, repo)
-        if "trace" in sections:
-            add_entry_trace_block(doc, "Entry-point call trace", all_records, repo)
-        if "core" in sections:
-            add_core_files_block(doc, "Core files", all_records, repo)
-        if "toc" in sections:
-            add_unified_toc(
-                doc, "Table of contents",
-                tracked_records, untracked_records, local_only_records, repo, has_git,
-                git_roots=git_roots,
-            )
-        if "entries" in sections:
-            add_docx_file_entries(doc, "Tracked file entries", tracked_records, repo)
-            add_docx_file_entries(doc, "Untracked file entries", untracked_records, repo)
     else:
         add_compact_paragraph(doc, "Git repo detected: no", after_pt=2)
 
-        local_summary = summarize_records([record for _, record in local_only_records])
-        if "glance" in sections:
-            add_at_a_glance_block(doc, local_summary, local_only_records, repo, has_git)
-        if "recent" in sections:
-            add_recent_files_block(doc, "Recent files", local_only_records, repo)
-        if "architecture" in sections:
-            add_architecture_summary(doc, repo, has_git, tracked_records, untracked_records, local_only_records)
-        if "entry_points" in sections:
-            add_entry_points_block(doc, "Entry points", local_only_records, repo)
-        if "trace" in sections:
-            add_entry_trace_block(doc, "Entry-point call trace", local_only_records, repo)
-        if "core" in sections:
-            add_core_files_block(doc, "Core files", local_only_records, repo)
-        if "toc" in sections:
-            add_unified_toc(
-                doc, "Table of contents",
-                tracked_records, untracked_records, local_only_records, repo, has_git,
-                git_roots=git_roots,
-            )
-        if "entries" in sections:
-            add_docx_file_entries(doc, "File entries", local_only_records, repo)
+    # Unified record view — covers self-repo, workspace, ancestor, and
+    # no-repo cases without three separate code paths. In workspace mode
+    # tracked+untracked AND local-only records coexist; the old has_git
+    # dichotomy would have silently dropped one side.
+    all_records = iter_all_records(tracked_records, untracked_records, local_only_records)
+    overall_summary = summarize_records([r for _, r in all_records])
+    tracked_summary = (
+        summarize_records([r for _, r in tracked_records]) if tracked_records else None
+    )
+    untracked_summary = (
+        summarize_records([r for _, r in untracked_records]) if untracked_records else None
+    )
+
+    if "glance" in sections:
+        add_at_a_glance_block(
+            doc, overall_summary, all_records, repo, has_git,
+            tracked_summary=tracked_summary, untracked_summary=untracked_summary,
+        )
+    if "recent" in sections:
+        add_recent_files_block(doc, "Recent files", all_records, repo)
+    if "architecture" in sections:
+        add_architecture_summary(doc, repo, has_git, tracked_records, untracked_records, local_only_records)
+    if "entry_points" in sections:
+        add_entry_points_block(doc, "Entry points", all_records, repo)
+    if "trace" in sections:
+        add_entry_trace_block(doc, "Entry-point call trace", all_records, repo)
+    if "core" in sections:
+        add_core_files_block(doc, "Core files", all_records, repo)
+    if "toc" in sections:
+        add_unified_toc(
+            doc, "Table of contents",
+            tracked_records, untracked_records, local_only_records, repo, has_git,
+            git_roots=git_roots,
+        )
+    if "entries" in sections:
+        # Emit a section per non-empty bucket; in workspace mode all three
+        # can be populated simultaneously.
+        if tracked_records:
+            add_docx_file_entries(doc, "Tracked file entries", tracked_records, repo)
+        if untracked_records:
+            add_docx_file_entries(doc, "Untracked file entries", untracked_records, repo)
+        if local_only_records:
+            title = "No-repo file entries" if has_git else "File entries"
+            add_docx_file_entries(doc, title, local_only_records, repo)
 
     doc.save(output_path)
 
@@ -2732,18 +2710,16 @@ def export_md(
     )
     out.append("")
 
-    if has_git:
-        all_records = list(tracked_records) + list(untracked_records)
-        tracked_summary = summarize_records([r for _, r in tracked_records])
-        untracked_summary = summarize_records([r for _, r in untracked_records])
-        overall_summary = summarize_records(
-            [r for _, r in tracked_records] + [r for _, r in untracked_records]
-        )
-    else:
-        all_records = list(local_only_records)
-        tracked_summary = None
-        untracked_summary = None
-        overall_summary = summarize_records([r for _, r in local_only_records])
+    # Unified view; workspace mode (has_git=True with no-repo files alongside)
+    # would otherwise drop the no-repo files. See export_docx for context.
+    all_records = iter_all_records(tracked_records, untracked_records, local_only_records)
+    overall_summary = summarize_records([r for _, r in all_records])
+    tracked_summary = (
+        summarize_records([r for _, r in tracked_records]) if tracked_records else None
+    )
+    untracked_summary = (
+        summarize_records([r for _, r in untracked_records]) if untracked_records else None
+    )
 
     if "glance" in sections:
         out.append("## At a glance")
@@ -2901,11 +2877,15 @@ def export_md(
         out.append("")
 
     if "entries" in sections:
-        if has_git:
+        # Emit a heading per non-empty bucket so workspace mode shows all
+        # three (tracked + untracked subrepo files, plus no-repo siblings).
+        if tracked_records:
             _md_emit_file_entries(out, "Tracked file entries", tracked_records, repo)
+        if untracked_records:
             _md_emit_file_entries(out, "Untracked file entries", untracked_records, repo)
-        else:
-            _md_emit_file_entries(out, "File entries", local_only_records, repo)
+        if local_only_records:
+            title = "No-repo file entries" if has_git else "File entries"
+            _md_emit_file_entries(out, title, local_only_records, repo)
 
     output_path.write_text("\n".join(out).rstrip() + "\n", encoding="utf-8")
 
@@ -3164,18 +3144,16 @@ def export_odt(
         tracked_records, untracked_records, local_only_records,
     ))
 
-    if has_git:
-        all_records = list(tracked_records) + list(untracked_records)
-        overall_summary = summarize_records(
-            [r for _, r in tracked_records] + [r for _, r in untracked_records]
-        )
-        tracked_summary = summarize_records([r for _, r in tracked_records])
-        untracked_summary = summarize_records([r for _, r in untracked_records])
-    else:
-        all_records = list(local_only_records)
-        overall_summary = summarize_records([r for _, r in local_only_records])
-        tracked_summary = None
-        untracked_summary = None
+    # Unified view; see export_docx / export_md for the workspace-mode
+    # rationale (no-repo files coexist with tracked/untracked subrepos).
+    all_records = iter_all_records(tracked_records, untracked_records, local_only_records)
+    overall_summary = summarize_records([r for _, r in all_records])
+    tracked_summary = (
+        summarize_records([r for _, r in tracked_records]) if tracked_records else None
+    )
+    untracked_summary = (
+        summarize_records([r for _, r in untracked_records]) if untracked_records else None
+    )
 
     if "glance" in sections:
         add_h(1, "At a glance")
@@ -3308,10 +3286,15 @@ def export_odt(
             )
 
     if "entries" in sections:
-        groups = (
-            [("Tracked file entries", tracked_records), ("Untracked file entries", untracked_records)]
-            if has_git else [("File entries", local_only_records)]
-        )
+        # Heading per non-empty bucket — workspace mode populates all three.
+        groups: List[Tuple[str, Sequence[Tuple[Path, Dict[str, object]]]]] = []
+        if tracked_records:
+            groups.append(("Tracked file entries", tracked_records))
+        if untracked_records:
+            groups.append(("Untracked file entries", untracked_records))
+        if local_only_records:
+            title = "No-repo file entries" if has_git else "File entries"
+            groups.append((title, local_only_records))
         for section_title, records_seq in groups:
             add_h(1, section_title)
             if not records_seq:
